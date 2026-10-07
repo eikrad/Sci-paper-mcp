@@ -1,5 +1,6 @@
 """The three phase-1 tools as plain functions; CLI and MCP both call these."""
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def _dedupe(papers: list[Paper]) -> list[Paper]:
     return unique
 
 
-def search_papers(query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar")) -> list[dict]:
+def search_papers(query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar")) -> dict:
     found: list[Paper] = []
     errors = []
     searchers = {"arxiv": sources.search_arxiv, "semantic_scholar": sources.search_semantic_scholar}
@@ -44,7 +45,7 @@ def search_papers(query: str, limit: int = 10, sources_: tuple[str, ...] = ("arx
     results = [p.to_dict() for p in _dedupe(found)[:limit]]
     if errors and not results:
         raise RuntimeError("; ".join(errors))
-    return results
+    return {"results": results, "warnings": errors}
 
 
 def _venues() -> dict:
@@ -53,8 +54,7 @@ def _venues() -> dict:
 
 
 def _matches(venue: str, needles: list[str]) -> bool:
-    v = venue.lower()
-    return any(n in v for n in needles)
+    return any(re.search(n, venue, re.I) for n in needles)
 
 
 def trust_check(identifier: str) -> dict:

@@ -19,16 +19,51 @@ def test_search_merges_sources():
                         "year": 2020, "authors": [{"name": "P. Lewis"}], "venue": "NeurIPS",
                         "externalIds": {"ArXiv": "2005.11401"}, "citationCount": 5000}]}
     )
-    res = core.search_papers("rag")
+    res = core.search_papers("rag")["results"]
     assert len(res) == 1
     assert res[0]["venue"] == "NeurIPS" and res[0]["pdf_url"].endswith("2005.11401")
+
+
+@pytest.fixture(autouse=True)
+def no_sleep(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+
+
+@pytest.mark.parametrize("venue,expected", [
+    ("Conference on Empirical Methods in Natural Language Processing", "HIGH"),
+    ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
+    ("Social Science Computer Review", "MEDIUM"),
+    ("Oracle Journal", "MEDIUM"),
+])
+@respx.mock
+def test_venue_matching(venue, expected):
+    _s2("DOI:10.1/x", venue=venue, authors=[{"name": "A B"}])
+    assert core.trust_check("10.1/x")["verdict"] == expected
 
 
 @respx.mock
 def test_search_survives_one_source_down():
     respx.get(sources.ARXIV_API).respond(text=ATOM)
     respx.get(f"{sources.S2_API}/paper/search").respond(429)
-    assert core.search_papers("rag")[0]["source"] == "arxiv"
+    out = core.search_papers("rag")
+    assert out["results"][0]["source"] == "arxiv" and "semantic_scholar" in out["warnings"][0]
+
+
+@respx.mock
+def test_s2_retries_on_429(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+    route = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x")
+    route.side_effect = [httpx.Response(429), httpx.Response(200, json={"title": "T"})]
+    assert sources.get_s2_paper("10.1/x")["title"] == "T"
+
+
+@respx.mock
+def test_s2_gives_up_with_hint(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+    monkeypatch.delenv("S2_API_KEY", raising=False)
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    with pytest.raises(httpx.HTTPStatusError, match="S2_API_KEY"):
+        sources.get_s2_paper("10.1/x")
 
 
 @pytest.mark.parametrize("raw,expected", [

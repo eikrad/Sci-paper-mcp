@@ -1,6 +1,7 @@
 """Thin clients for arXiv and Semantic Scholar."""
 
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 
@@ -42,6 +43,21 @@ def _client() -> httpx.Client:
     if key := config.s2_api_key():
         headers["x-api-key"] = key
     return httpx.Client(headers=headers, timeout=30, follow_redirects=True)
+
+
+def _get(c: httpx.Client, url: str, params: dict, tries: int = 4) -> httpx.Response:
+    """GET with backoff on 429; Semantic Scholar throttles anonymous clients hard."""
+    for attempt in range(tries):
+        r = c.get(url, params=params)
+        if r.status_code != 429 or attempt == tries - 1:
+            break
+        retry_after = r.headers.get("Retry-After", "")
+        time.sleep(min(float(retry_after) if retry_after.isdigit() else 2**attempt, 10))
+    if r.status_code == 429:
+        hint = "" if config.s2_api_key() else " Set S2_API_KEY for a higher rate limit."
+        raise httpx.HTTPStatusError(f"rate limited by {url}.{hint}", request=r.request, response=r)
+    r.raise_for_status()
+    return r
 
 
 def search_arxiv(query: str, limit: int) -> list[Paper]:
@@ -89,11 +105,7 @@ def _from_s2(d: dict) -> Paper:
 
 def search_semantic_scholar(query: str, limit: int) -> list[Paper]:
     with _client() as c:
-        r = c.get(
-            f"{S2_API}/paper/search",
-            params={"query": query, "limit": limit, "fields": S2_FIELDS},
-        )
-        r.raise_for_status()
+        r = _get(c, f"{S2_API}/paper/search", {"query": query, "limit": limit, "fields": S2_FIELDS})
     return [_from_s2(d) for d in r.json().get("data", [])]
 
 
@@ -114,8 +126,5 @@ def s2_identifier(identifier: str) -> str:
 def get_s2_paper(identifier: str, extra_fields: str = "") -> dict:
     fields = S2_FIELDS + (f",{extra_fields}" if extra_fields else "")
     with _client() as c:
-        r = c.get(
-            f"{S2_API}/paper/{s2_identifier(identifier)}", params={"fields": fields}
-        )
-        r.raise_for_status()
+        r = _get(c, f"{S2_API}/paper/{s2_identifier(identifier)}", {"fields": fields})
     return r.json()

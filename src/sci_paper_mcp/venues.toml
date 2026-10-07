@@ -1,9 +1,11 @@
-# Substring matches, case-insensitive, against the Semantic Scholar venue string.
-# "reputable" -> HIGH when peer-reviewed; "suspect" -> LOW.
+# Regexes (case-insensitive, re.search) matched against the Semantic Scholar venue string.
+# "reputable" -> HIGH when peer-reviewed; "suspect" -> LOW. Anchor short names to avoid false hits.
 reputable = [
-  "neurips", "neural information processing", "icml", "international conference on machine learning",
-  "iclr", "international conference on learning representations", "acl", "emnlp", "naacl",
-  "association for computational linguistics", "sigir", "kdd", "aaai", "ijcai", "cvpr", "iccv",
-  "eccv", "tacl", "jmlr", "nature", "science", "tmlr",
+  '\bneurips\b', 'neural information processing', '\bicml\b', 'international conference on machine learning',
+  '\biclr\b', 'international conference on learning representations',
+  '\bacl\b', '\bemnlp\b', '\bnaacl\b', 'empirical methods in natural language processing',
+  'association for computational linguistics', '\bsigir\b', 'research and development in information retrieval',
+  '\bkdd\b', '\baaai\b', '\bijcai\b', '\bcvpr\b', '\biccv\b', '\beccv\b', '\btacl\b', '\bjmlr\b', '\btmlr\b',
+  '^nature$', '^science$',
 ]
 suspect = []

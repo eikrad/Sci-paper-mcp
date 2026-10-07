@@ -2,6 +2,9 @@
 
 import argparse
 import json
+import sys
+
+import httpx
 
 from . import core
 
@@ -26,9 +29,12 @@ def main(argv: list[str] | None = None) -> None:
 
         mcp.run()
         return
-    result = {
-        "search": lambda: core.search_papers(a.query, a.limit),
-        "trust": lambda: core.trust_check(a.identifier),
-        "pdf": lambda: core.fetch_pdf(a.identifier, a.paper_id, a.dest),
-    }[a.cmd]()
+    try:
+        result = {
+            "search": lambda: core.search_papers(a.query, a.limit),
+            "trust": lambda: core.trust_check(a.identifier),
+            "pdf": lambda: core.fetch_pdf(a.identifier, a.paper_id, a.dest),
+        }[a.cmd]()
+    except (RuntimeError, httpx.HTTPError) as e:
+        sys.exit(f"error: {e}")
     print(json.dumps(result, indent=2, ensure_ascii=False))

@@ -9,8 +9,8 @@ mcp = FastMCP("sci-paper-mcp")
 
 
 @mcp.tool
-def search_papers(query: str, limit: int = 10) -> list[dict]:
-    """Search arXiv and Semantic Scholar; results are merged and de-duplicated."""
+def search_papers(query: str, limit: int = 10) -> dict:
+    """Search arXiv and Semantic Scholar; results are merged and de-duplicated. `warnings` lists sources that failed."""
     return core.search_papers(query, limit)
 
 
