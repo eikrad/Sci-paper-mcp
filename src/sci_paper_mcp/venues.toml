@@ -1,0 +1,9 @@
+# Substring matches, case-insensitive, against the Semantic Scholar venue string.
+# "reputable" -> HIGH when peer-reviewed; "suspect" -> LOW.
+reputable = [
+  "neurips", "neural information processing", "icml", "international conference on machine learning",
+  "iclr", "international conference on learning representations", "acl", "emnlp", "naacl",
+  "association for computational linguistics", "sigir", "kdd", "aaai", "ijcai", "cvpr", "iccv",
+  "eccv", "tacl", "jmlr", "nature", "science", "tmlr",
+]
+suspect = []
