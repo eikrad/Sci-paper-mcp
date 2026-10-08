@@ -139,7 +139,13 @@ def trust_check(identifier: str) -> dict:
     if d is not None and not authors:
         reasons.append("no authors listed")
     if oa is None:
-        reasons.append("retraction status unknown (OpenAlex unavailable)")
+        if any(w.startswith("openalex") for w in warnings):
+            why = "OpenAlex unavailable"
+        elif oa_id:
+            why = "not found in OpenAlex"
+        else:
+            why = "no DOI or arXiv id to look it up in OpenAlex"
+        reasons.append(f"retraction status unknown ({why})")
 
     return {
         "verdict": verdict,

@@ -269,3 +269,21 @@ def test_arxiv_query_requires_every_term_to_match(query, expected):
     route = respx.get(sources.ARXIV_API).respond(text="<feed xmlns='http://www.w3.org/2005/Atom'/>")
     sources.search_arxiv(query, 3)
     assert route.calls[0].request.url.params["search_query"] == expected
+
+
+@respx.mock
+def test_paper_missing_in_openalex_is_not_reported_as_an_outage():
+    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
+    _oa(404)
+    r = core.trust_check("2512.08290")
+    assert r["retracted"] is None and r["warnings"] == []
+    assert any("not found in OpenAlex" in x for x in r["reasons"])
+    assert not any("unavailable" in x for x in r["reasons"])
+
+
+@respx.mock
+def test_openalex_outage_is_reported_as_unavailable():
+    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
+    _oa(500)
+    r = core.trust_check("2512.08290")
+    assert any("OpenAlex unavailable" in x for x in r["reasons"]) and r["warnings"]
