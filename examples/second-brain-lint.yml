@@ -13,4 +13,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uvx --from git+https://github.com/eikrad/sci-paper-mcp sci-paper-mcp lint --brain . --fail-on error
+      - run: uvx --from git+https://github.com/eikrad/Sci-paper-mcp sci-paper-mcp lint --brain . --fail-on error

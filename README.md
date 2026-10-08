@@ -1,11 +1,36 @@
 # sci-paper-mcp
 
+[![CI](https://github.com/eikrad/Sci-paper-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/eikrad/Sci-paper-mcp/actions/workflows/ci.yml)
+
 MCP server that finds research papers on arXiv and Semantic Scholar, checks how trustworthy they are
 (venue, citations, authors, retractions via OpenAlex), fetches the open-access PDF and prepares a
 structured page for your Logseq second brain. Runs locally over stdio and works with Claude Code,
 Cursor, Codex, opencode and any other MCP-capable agent.
 
 Design decisions: [docs/adr](docs/adr). Vocabulary: [GLOSSARY.md](GLOSSARY.md).
+
+## Install
+
+Needs [uv](https://docs.astral.sh/uv/). Nothing to install separately: point your agent at a release tag and `uv` fetches it.
+
+```json
+{
+  "mcpServers": {
+    "sci-paper-mcp": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/eikrad/Sci-paper-mcp@v0.1.0", "sci-paper-mcp", "serve"],
+      "env": {
+        "SECOND_BRAIN_PATH": "/path/to/your/logseq-graph",
+        "LOGSEQ_API_URL": "http://localhost:12315",
+        "LOGSEQ_API_TOKEN": "<token from Logseq: Settings → Features → HTTP APIs server>"
+      }
+    }
+  }
+}
+```
+
+Pages are written with [`mcp-logseq`](https://github.com/ergut/mcp-logseq), which this server is meant to run next to
+(`uv run --no-project --with mcp-logseq mcp-logseq`; the old `mcp<2` pin is no longer needed since 1.9.0).
 
 ## Tools
 
@@ -49,3 +74,18 @@ uv run pytest            # add -m live to hit the real APIs
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs ruff and pytest. To lint your graph in its own
 repo's CI, copy [examples/second-brain-lint.yml](examples/second-brain-lint.yml).
+
+## Releases
+
+### v0.1.0
+
+First release. Five tools (`search_papers`, `trust_check`, `fetch_pdf`, `prepare_ingest`, `lint`), a CLI and tests at
+every seam (93 offline tests, 3 opt-in live tests).
+
+- Search across arXiv, Semantic Scholar and OpenAlex, merged and de-duplicated.
+- Trust verdict HIGH/MEDIUM/LOW with reasons, using Semantic Scholar and OpenAlex (retraction flag); venues in `venues.toml`.
+- `prepare_ingest` validates against the brain's `AGENTS.md`/`Templates`, refuses when Logseq has a different graph open and returns the calls for `mcp-logseq`.
+- `lint` checks schema, PDF paths, backlinks, Related Pages links, empty highlights, staleness, Index coverage and `AGENTS.md`/`Templates` drift.
+
+Known limits: the open-graph check and the property placement of `create_page` have only been tested against mocks, not a live Logseq;
+Semantic Scholar throttles anonymous clients (set `S2_API_KEY`); `radiation-brain` needs its own `AGENTS.md` first.
