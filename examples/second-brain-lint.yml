@@ -1,0 +1,17 @@
+# Copy to <brain-repo>/.github/workflows/lint.yml
+# Lints the Logseq graph on every push/PR. Fails on errors (schema, missing PDFs, dead
+# Related Pages links, AGENTS.md/Templates drift); warnings and todos are only reported.
+# Replace OWNER/REPO with the location of sci-paper-mcp.
+name: Brain lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx --from git+https://github.com/OWNER/REPO sci-paper-mcp lint --brain . --fail-on error

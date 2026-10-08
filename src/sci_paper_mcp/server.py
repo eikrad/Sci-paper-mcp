@@ -4,6 +4,7 @@ from fastmcp import FastMCP
 
 from . import config, core
 from .ingest import prepare_ingest as _prepare_ingest
+from .lint import lint as _lint
 
 mcp = FastMCP("sci-paper-mcp")
 
@@ -87,3 +88,14 @@ def prepare_ingest(
         language=language,
         code_url=code_url,
     )
+
+
+@mcp.tool
+def lint() -> dict:
+    """Read-only health check of the brain at SECOND_BRAIN_PATH. Changes nothing.
+
+    Checks schema conformance, PDF paths, backlinks, Related Pages links, empty highlights,
+    stale pages and AGENTS.md/Templates drift. Judgement calls (contradictions, concept gaps)
+    are left to the agent.
+    """
+    return _lint(config.second_brain_path())
