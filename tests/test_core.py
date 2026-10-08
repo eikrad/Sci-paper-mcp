@@ -46,6 +46,14 @@ def no_sleep(monkeypatch):
         ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
         ("Social Science Computer Review", "MEDIUM"),
         ("Oracle Journal", "MEDIUM"),
+    ("USENIX Security Symposium", "HIGH"),
+    ("IEEE Symposium on Security and Privacy", "HIGH"),
+    ("Conference on Computer and Communications Security", "HIGH"),
+    ("ACM SIGSAC Conference on Computer and Communications Security", "HIGH"),
+    ("Network and Distributed System Security Symposium", "HIGH"),
+    ("Journal of Information Security and Applications", "MEDIUM"),
+    ("Security and Communication Networks", "MEDIUM"),
+    ("International Conference on Security and Privacy in Smart Cities", "MEDIUM"),
     ],
 )
 @respx.mock
