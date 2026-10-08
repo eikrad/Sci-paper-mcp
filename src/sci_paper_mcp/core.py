@@ -7,6 +7,7 @@ from typing import Literal
 import httpx
 
 from . import config, sources
+from .brain import Brain, pdf_name, resolve_paper_id, save_pdf
 from .sources import Paper
 from .verdict import is_preprint, propose_verdict
 
@@ -192,48 +193,39 @@ def _pdf_url(p: Paper) -> str:
     raise RuntimeError(f"No open-access PDF found for {p.title or p.doi or p.arxiv_id}")
 
 
-def _safe(text: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in text)
-
-
-def _default_paper_id(p: Paper) -> str:
-    if not p.authors or not p.year:
-        raise RuntimeError("Cannot derive a PAPER-ID (author/year unknown); pass paper_id.")
-    return f"{_safe(p.authors[0].split()[-1])}{p.year}"
-
-
-def fetch_pdf(identifier: str, paper_id: str | None = None, dest_dir: str | None = None) -> dict:
-    """Download the open-access PDF as `<PAPER-ID>-<id>.pdf`; never overwrites."""
-    p = _load_paper(identifier, paper_id)
-    url = _pdf_url(p)
-    paper_id = _safe(paper_id) if paper_id else _default_paper_id(p)
-    id_part = _safe(p.arxiv_id or p.doi or p.s2_id or "unknown")
-    name = f"{paper_id}-{id_part}.pdf"
-
-    brain = config.second_brain_path()
-    if dest_dir:
-        folder = Path(dest_dir).expanduser()
-    elif brain:
-        folder = brain / "assets" / "papers"
-    else:
-        folder = config.cache_dir()
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / name
-    if path.exists():
-        raise RuntimeError(f"{path} already exists; the raw layer is never overwritten.")
-
+def _download_pdf(url: str) -> bytes:
     with httpx.Client(timeout=60, follow_redirects=True) as c:
         r = c.get(url)
         r.raise_for_status()
     if not r.content.startswith(b"%PDF"):
         raise RuntimeError(f"{url} did not return a PDF")
-    with path.open("xb") as f:
-        f.write(r.content)
-    in_brain = brain is not None and not dest_dir
+    return r.content
+
+
+def fetch_pdf(
+    root: Path | None, identifier: str, paper_id: str | None = None, dest_dir: str | None = None
+) -> dict:
+    """Download the open-access PDF as `<PAPER-ID>-<id>.pdf`; never overwrites.
+
+    Goes into the Brain's raw layer unless `dest_dir` is given; with no Brain the cache dir.
+    """
+    p = _load_paper(identifier, paper_id)
+    url = _pdf_url(p)
+    paper_id = resolve_paper_id(paper_id, p.authors, p.year)
+    name = pdf_name(paper_id, arxiv_id=p.arxiv_id, doi=p.doi, s2_id=p.s2_id)
+    brain = Brain(root) if root is not None and not dest_dir else None
+    if dest_dir:
+        folder = Path(dest_dir).expanduser()
+    elif brain:
+        folder = brain.raw_layer
+    else:
+        folder = config.cache_dir()
+
+    path = save_pdf(folder, name, lambda: _download_pdf(url))
     return {
         "path": str(path),
-        "pdf_path_property": f"../assets/papers/{name}" if in_brain else None,
+        "pdf_path_property": brain.pdf_path(name) if brain else None,
         "paper_id": paper_id,
         "url": url,
-        "bytes": len(r.content),
+        "bytes": path.stat().st_size,
     }

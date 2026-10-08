@@ -51,3 +51,13 @@ async def test_lint_tool_runs_against_the_configured_brain(client, healthy_brain
     monkeypatch.setenv("SECOND_BRAIN_PATH", str(healthy_brain))
     result = await client.call_tool("lint", {})
     assert result.data["findings"] == []
+
+
+@respx.mock
+async def test_fetch_pdf_tool_saves_into_the_configured_brain(client, make_brain, monkeypatch):
+    brain = make_brain()
+    monkeypatch.setenv("SECOND_BRAIN_PATH", str(brain))
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    result = await client.call_tool("fetch_pdf", {"identifier": "2005.11401", "paper_id": "X"})
+    assert result.data["pdf_path_property"] == "../assets/papers/X-2005.11401.pdf"
+    assert (brain / "assets" / "papers" / "X-2005.11401.pdf").exists()

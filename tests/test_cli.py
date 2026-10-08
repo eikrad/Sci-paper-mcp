@@ -1,5 +1,6 @@
 import json
 
+import respx
 from conftest import paper_page
 
 from sci_paper_mcp.cli import main
@@ -38,3 +39,14 @@ def test_lint_without_a_schema_reports_a_clean_error(tmp_path, capsys):
     code, out = run(capsys, "lint", "--brain", str(tmp_path))
     assert code == 2
     assert "AGENTS.md" in out.err
+
+
+@respx.mock
+def test_pdf_goes_into_the_configured_brain(make_brain, monkeypatch, capsys):
+    brain = make_brain()
+    monkeypatch.setenv("SECOND_BRAIN_PATH", str(brain))
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    code, out = run(capsys, "pdf", "2005.11401", "--paper-id", "X")
+    assert code == 0
+    assert json.loads(out.out)["pdf_path_property"] == "../assets/papers/X-2005.11401.pdf"
+    assert (brain / "assets" / "papers" / "X-2005.11401.pdf").exists()

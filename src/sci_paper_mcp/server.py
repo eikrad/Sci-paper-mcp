@@ -34,7 +34,7 @@ def fetch_pdf(identifier: str, paper_id: str | None = None, dest_dir: str | None
     Saves to assets/papers/<PAPER-ID>-<id>.pdf and never overwrites. paper_id such as
     'RAG-Lewis2020' is derived from first author and year if omitted.
     """
-    return core.fetch_pdf(identifier, paper_id, dest_dir)
+    return core.fetch_pdf(config.second_brain_path(), identifier, paper_id, dest_dir)
 
 
 @mcp.tool

@@ -6,7 +6,16 @@ from pathlib import Path
 import httpx
 
 from . import config
-from .schema import Schema, SchemaError, load_schema, page_exists
+from .brain import (
+    Brain,
+    SchemaError,
+    highlights_embed,
+    names_pdf,
+    paper_properties,
+    paper_title,
+    pdf_name,
+    pdf_stem,
+)
 
 VERDICTS = ("HIGH", "MEDIUM", "LOW")
 
@@ -70,8 +79,9 @@ def prepare_ingest(
     today: date | None = None,
     verify_graph: bool = True,
 ) -> dict:
-    schema: Schema = load_schema(root)
-    graph_warning = _verify_open_graph(schema.root) if verify_graph else None
+    brain = Brain(root)
+    schema = brain.schema
+    graph_warning = _verify_open_graph(brain.root) if verify_graph else None
     errors = []
     if topic not in schema.taxonomy:
         errors.append(f"topic '{topic}' not in taxonomy {schema.taxonomy}")
@@ -81,8 +91,8 @@ def prepare_ingest(
         errors.append(f"verdict must be one of {VERDICTS}")
     if not (arxiv_id or doi):
         errors.append("need arxiv_id or doi for document-id")
-    page_title = f"Sources/Research/{paper_id}"
-    if page_exists(schema.root, page_title):
+    page_title = paper_title(paper_id)
+    if brain.has_page(page_title):
         errors.append(f"page '{page_title}' already exists")
     if errors:
         raise SchemaError("; ".join(errors))
@@ -90,16 +100,14 @@ def prepare_ingest(
     warnings = [graph_warning] if graph_warning else []
     if not 3 <= len(related_pages) <= 5:
         warnings.append(f"AGENTS.md asks for 3-5 related pages, got {len(related_pages)}")
-    missing = [p for p in related_pages if not page_exists(schema.root, p)]
+    missing = [p for p in related_pages if not brain.has_page(p)]
     if missing:
         warnings.append(f"related pages do not exist: {missing}")
     related_ok = [p for p in related_pages if p not in missing]
 
-    stem = Path(pdf_path).stem if pdf_path and pdf_path != "not-found" else f"{paper_id}-{arxiv_id or 'na'}"
-    document_id = f"arXiv:{arxiv_id}" if arxiv_id else f"doi:{doi}"
     today = today or date.today()
-
-    has_pdf = bool(pdf_path) and pdf_path != "not-found"
+    has_pdf = names_pdf(pdf_path)
+    pdf = pdf_path if has_pdf else pdf_name(paper_id, arxiv_id=arxiv_id, doi=doi)
     pdf_state = f"Present — {pdf_path}" if has_pdf else "not found"
 
     body = {
@@ -117,8 +125,8 @@ def prepare_ingest(
                 f"**PDF:** {pdf_state}",
             ]
         ),
-        "Highlights": f"- {{{{embed [[hls__{stem}]]}}}}",
-        "Local PDF": f"- [{stem}.pdf]({pdf_path})" if pdf_path and pdf_path != "not-found" else "- not found",
+        "Highlights": f"- {highlights_embed(pdf)}",
+        "Local PDF": f"- [{pdf_stem(pdf)}.pdf]({pdf_path})" if has_pdf else "- not found",
     }
     parts = [f"# {title}", f"**Authors:** {', '.join(authors)}"]
     parts.append(f"**Venue:** {venue or 'n/a'}" + (f" ({year})" if year else ""))
@@ -129,17 +137,15 @@ def prepare_ingest(
             warnings.append(f"template section '{heading}' is unknown to the server; left empty")
         parts.append(f"## {heading}\n{body.get(heading, '')}")
 
-    properties = {
-        "source-type": "paper",
-        "document-id": document_id,
-        "topic": topic,
-        "language": language,
-        "status": "ingested",
-        "date": today.isoformat(),
-        "url": f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else f"https://doi.org/{doi}",
-        "trustworthiness": verdict,
-        "pdf-path": pdf_path or "not-found",
-    }
+    properties = paper_properties(
+        arxiv_id=arxiv_id,
+        doi=doi,
+        topic=topic,
+        language=language,
+        verdict=verdict,
+        date=today.isoformat(),
+        pdf_path=pdf_path,
+    )
     calls = [
         {
             "tool": "create_page",

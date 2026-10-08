@@ -1,8 +1,10 @@
 import httpx
 import pytest
 import respx
+from conftest import ingest_args
 
 from sci_paper_mcp import core, sources
+from sci_paper_mcp.ingest import prepare_ingest
 from sci_paper_mcp.sources import Identifier
 
 ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
@@ -354,17 +356,16 @@ def test_lookup_fills_ids_from_the_identifier(raw, s2_path, field, value):
 @respx.mock
 def test_fetch_pdf_names_after_paper_id(tmp_path):
     respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1.5 data")
-    out = core.fetch_pdf("arXiv:2005.11401", "RAG-Lewis2020", str(tmp_path))
+    out = core.fetch_pdf(None, "arXiv:2005.11401", "RAG-Lewis2020", str(tmp_path))
     assert out["path"].endswith("RAG-Lewis2020-2005.11401.pdf")
 
 
 @respx.mock
-def test_fetch_pdf_derives_paper_id_and_writes_to_brain(tmp_path, monkeypatch):
-    monkeypatch.setenv("SECOND_BRAIN_PATH", str(tmp_path))
+def test_fetch_pdf_derives_paper_id_and_writes_to_brain(tmp_path):
     _s2("ARXIV:2005.11401", externalIds={"ArXiv": "2005.11401"}, authors=[{"name": "Patrick Lewis"}])
     _oa()
     respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
-    out = core.fetch_pdf("2005.11401")
+    out = core.fetch_pdf(tmp_path, "2005.11401")  # no AGENTS.md: the schema is not needed for a PDF
     assert out["pdf_path_property"] == "../assets/papers/Lewis2020-2005.11401.pdf"
     assert (tmp_path / "assets/papers/Lewis2020-2005.11401.pdf").exists()
 
@@ -381,7 +382,7 @@ def test_fetch_pdf_falls_back_to_openalex_when_s2_is_down(tmp_path):
         best_oa_location={"pdf_url": "https://example.org/x.pdf"},
     )
     respx.get("https://example.org/x.pdf").respond(content=b"%PDF-1")
-    out = core.fetch_pdf("10.1/x", dest_dir=str(tmp_path))
+    out = core.fetch_pdf(None, "10.1/x", dest_dir=str(tmp_path))
     assert out["paper_id"] == "Lovelace2024" and out["url"] == "https://example.org/x.pdf"
     assert (tmp_path / "Lovelace2024-10.1_x.pdf").exists()
 
@@ -391,22 +392,69 @@ def test_fetch_pdf_of_an_unknown_paper_says_so(tmp_path):
     respx.get(f"{sources.S2_API}/paper/DOI:10.1/nope").respond(404)
     _oa()
     with pytest.raises(RuntimeError, match="not found"):
-        core.fetch_pdf("10.1/nope", dest_dir=str(tmp_path))
+        core.fetch_pdf(None, "10.1/nope", dest_dir=str(tmp_path))
 
 
 @respx.mock
 def test_fetch_pdf_never_overwrites(tmp_path):
     respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
-    core.fetch_pdf("2005.11401", "X", str(tmp_path))
+    core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
     with pytest.raises(RuntimeError, match="already exists"):
-        core.fetch_pdf("2005.11401", "X", str(tmp_path))
+        core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+
+
+@respx.mock
+def test_fetch_pdf_refuses_before_downloading_when_the_brain_already_has_the_file(make_brain):
+    brain = make_brain(assets=["X-2005.11401.pdf"])
+    with pytest.raises(RuntimeError, match="already exists"):  # nothing is mocked: a request would fail
+        core.fetch_pdf(brain, "2005.11401", "X")
+    assert (brain / "assets/papers/X-2005.11401.pdf").read_bytes() == b"%PDF-1"
+
+
+@respx.mock
+def test_fetch_pdf_without_a_brain_goes_to_the_cache_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    out = core.fetch_pdf(None, "2005.11401", "X")
+    assert out["path"] == str(tmp_path / "sci-paper-mcp" / "X-2005.11401.pdf")
+    assert out["pdf_path_property"] is None
 
 
 @respx.mock
 def test_fetch_pdf_rejects_html(tmp_path):
     respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"<html>")
     with pytest.raises(RuntimeError):
-        core.fetch_pdf("2005.11401", "X", str(tmp_path))
+        core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "identifier,ids",
+    [
+        pytest.param("2005.11401", {"arxiv_id": "2005.11401"}, id="arxiv"),
+        pytest.param("hep-th/9901001", {"arxiv_id": "hep-th/9901001"}, id="old-style-arxiv"),
+        pytest.param("10.1/x", {"arxiv_id": None, "doi": "10.1/x"}, id="doi-only"),
+    ],
+)
+@respx.mock
+def test_highlights_page_of_a_paper_ingested_first_names_the_pdf_fetched_later(make_brain, identifier, ids):
+    brain = make_brain(pages={"Concepts/RAG": "- x"})
+    if identifier.startswith("10."):
+        respx.get(f"{sources.S2_API}/paper/DOI:{identifier}").respond(429)
+        _oa(
+            200,
+            doi=f"https://doi.org/{identifier}",
+            best_oa_location={"pdf_url": "https://example.org/x.pdf"},
+        )
+        respx.get("https://example.org/x.pdf").respond(content=b"%PDF-1")
+    else:
+        respx.get(f"https://arxiv.org/pdf/{identifier}").respond(content=b"%PDF-1")
+
+    page = prepare_ingest(brain, **ingest_args(pdf_path=None, **ids))["calls"][0]["arguments"]["content"]
+    core.fetch_pdf(brain, identifier, "RAG-Lewis2020")
+
+    [pdf] = (brain / "assets" / "papers").glob("*.pdf")
+    assert f"{{{{embed [[hls__{pdf.stem}]]}}}}" in page
 
 
 @respx.mock
@@ -415,4 +463,4 @@ def test_unpaywall_needs_email(monkeypatch):
     _s2("DOI:10.1/x", externalIds={"DOI": "10.1/x"}, authors=[{"name": "A B"}])
     _oa()
     with pytest.raises(RuntimeError, match="UNPAYWALL_EMAIL"):
-        core.fetch_pdf("10.1/x")
+        core.fetch_pdf(None, "10.1/x")

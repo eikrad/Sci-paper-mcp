@@ -1,76 +1,17 @@
 import json
-from datetime import date
 
 import httpx
 import pytest
 import respx
+from conftest import ingest_args as args
 
+from sci_paper_mcp.brain import SchemaError
 from sci_paper_mcp.ingest import prepare_ingest
-from sci_paper_mcp.schema import SchemaError, load_schema
-
-AGENTS = """# AGENTS
-```
-source-type::   paper | book | concept
-topic::         rag-foundations | rag-retrieval
-language::      en | da | de
-status::        ingested | reviewed
-```
-"""
-TEMPLATES = """## Templates
-- ## Research Paper
-template:: Research Paper
-	- # <Title>
-		- ## Abstract
-			-
-		- ## Key Points
-			-
-		- ## Verification
-			-
-		- ## Highlights
-			-
-- ### Research Paper — page-property block
-"""
 
 
 @pytest.fixture
-def brain(tmp_path):
-    (tmp_path / "pages").mkdir()
-    (tmp_path / "AGENTS.md").write_text(AGENTS)
-    (tmp_path / "pages" / "Templates.md").write_text(TEMPLATES)
-    (tmp_path / "pages" / "Concepts%2FRAG.md").write_text("- x")
-    return tmp_path
-
-
-def args(**kw):
-    base = dict(
-        paper_id="RAG-Lewis2020",
-        title="RAG",
-        authors=["P. Lewis"],
-        topic="rag-retrieval",
-        verdict="HIGH",
-        verdict_reasoning="NeurIPS",
-        abstract="abs",
-        key_points=["k"],
-        relevance="r",
-        related_pages=["Concepts/RAG"],
-        arxiv_id="2005.11401",
-        pdf_path="../assets/papers/RAG-Lewis2020-2005.11401.pdf",
-        today=date(2026, 1, 2),
-    )
-    return base | kw
-
-
-def test_schema_parsed_from_graph(brain):
-    s = load_schema(brain)
-    assert s.taxonomy == ["rag-foundations", "rag-retrieval"]
-    assert s.sections == ["Abstract", "Key Points", "Verification", "Highlights"]
-
-
-def test_missing_agents_md_is_hard_error(tmp_path):
-    with pytest.raises(SchemaError, match="no schema"):
-        load_schema(tmp_path)
-    with pytest.raises(SchemaError, match="SECOND_BRAIN_PATH"):
-        load_schema(None)
+def brain(make_brain):
+    return make_brain(pages={"Concepts/RAG": "- x"})
 
 
 def test_prepare_renders_calls_in_order(brain):
@@ -95,8 +36,8 @@ def test_invalid_input_rejected(brain, bad):
         prepare_ingest(brain, **args(**bad))
 
 
-def test_existing_page_rejected(brain):
-    (brain / "pages" / "Sources%2FResearch%2FRAG-Lewis2020.md").write_text("- x")
+def test_existing_page_rejected(make_brain):
+    brain = make_brain(pages={"Sources/Research/RAG-Lewis2020": "- x"})
     with pytest.raises(SchemaError, match="already exists"):
         prepare_ingest(brain, **args())
 
