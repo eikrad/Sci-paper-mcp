@@ -1,40 +1,51 @@
-"""The three phase-1 tools as plain functions; CLI and MCP both call these."""
+"""The phase-1 tools as plain functions; CLI and MCP both call these."""
 
-import re
-import tomllib
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
+from typing import Literal
 
 import httpx
 
 from . import config, sources
 from .sources import Paper
+from .verdict import is_preprint, propose_verdict
 
 UNPAYWALL_API = "https://api.unpaywall.org/v2"
 
-
 _PRIORITY = {"semantic_scholar": 0, "openalex": 1, "arxiv": 2}  # richest metadata first
-_FILLABLE = ("venue", "citations", "abstract", "year", "pdf_url", "doi", "arxiv_id")
+
+
+def _rank(p: Paper) -> int:
+    return _PRIORITY.get(p.source, 9)
+
+
+def _missing(value) -> bool:
+    return value is None or value == ""  # an empty list is a source's answer, not a gap
+
+
+def _merge(papers: list[Paper]) -> Paper:
+    """The richest source wins; lower ones fill every field it leaves unknown."""
+    winner, *rest = sorted(papers, key=_rank)
+    merged = replace(winner)
+    for p in rest:
+        for f in fields(Paper):
+            if _missing(getattr(merged, f.name)):
+                setattr(merged, f.name, getattr(p, f.name))
+    return merged
 
 
 def _dedupe(papers: list[Paper]) -> list[Paper]:
-    """Merge by arXiv id / DOI / title; the richest source wins and lower ones fill its gaps."""
-    seen: dict[str, Paper] = {}
-    for p in sorted(papers, key=lambda p: _PRIORITY.get(p.source, 9)):
+    """Group by arXiv id / DOI / title, then merge each group."""
+    groups: list[list[Paper]] = []
+    index: dict[str, list[Paper]] = {}
+    for p in sorted(papers, key=_rank):
         keys = [k for k in (p.arxiv_id, p.doi and p.doi.lower(), p.title.lower().strip()) if k]
-        hit = next((seen[k] for k in keys if k in seen), None)
-        if hit is None:
-            hit = p
-        else:
-            for attr in _FILLABLE:
-                if getattr(hit, attr) is None:
-                    setattr(hit, attr, getattr(p, attr))
-        for k in keys:
-            seen[k] = hit
-    unique: list[Paper] = []
-    for p in seen.values():
-        if p not in unique:
-            unique.append(p)
-    return unique
+        group = next((index[k] for k in keys if k in index), None)
+        if group is None:
+            groups.append(group := [])
+        group.append(p)
+        index.update(dict.fromkeys(keys, group))
+    return [_merge(g) for g in groups]
 
 
 def search_papers(
@@ -58,26 +69,66 @@ def search_papers(
     return {"results": results, "warnings": errors}
 
 
-def _venues() -> dict:
-    with (Path(__file__).parent / "venues.toml").open("rb") as f:
-        return tomllib.load(f)
+Outcome = Literal["found", "not_found", "failed", "skipped"]
 
 
-def _matches(venue: str, needles: list[str]) -> bool:
-    return any(re.search(n, venue, re.I) for n in needles)
+@dataclass
+class Lookup:
+    paper: Paper | None  # None: every queried source answered "not found"
+    outcomes: dict[str, Outcome]  # per source; "skipped" means it could not be addressed (no DOI)
+    warnings: list[str]  # one line per failed source
 
 
-def _try(fn, name: str, warnings: list[str]):
-    """Run a lookup; a failing or missing source becomes a warning, not an error."""
-    try:
-        return fn()
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code != 404:
-            warnings.append(f"{name}: {e}")
-        return None
-    except httpx.HTTPError as e:
-        warnings.append(f"{name}: {e}")
-        return None
+def lookup(identifier: str) -> Lookup:
+    """One merged Paper for a DOI, arXiv id or S2 id, from Semantic Scholar and OpenAlex.
+
+    A source that fails (network, 5xx, 429) becomes a warning; one that does not know the paper
+    (404) is only an outcome. Raises RuntimeError when no source answered and one failed, since
+    the failed one may know the paper.
+    """
+    ident = sources.Identifier.parse(identifier)
+    outcomes: dict[str, Outcome] = {}
+    warnings: list[str] = []
+
+    def ask(name: str, fetch) -> Paper | None:
+        try:
+            paper = fetch()
+        except httpx.HTTPError as e:
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
+                outcomes[name] = "not_found"
+            else:
+                outcomes[name] = "failed"
+                warnings.append(f"{name}: {e}")
+            return None
+        outcomes[name] = "found"
+        return paper
+
+    s2 = ask("semantic_scholar", lambda: sources.get_s2_paper(ident))
+    work_id = sources.openalex_work_id(ident, s2.doi if s2 else None)
+    oa = None
+    if work_id:
+        oa = ask("openalex", lambda: sources.get_openalex_work(work_id))
+    else:
+        outcomes["openalex"] = "skipped"
+
+    answers = [p for p in (s2, oa) if p is not None]
+    if not answers:
+        if warnings:
+            raise RuntimeError("; ".join(warnings))
+        return Lookup(None, outcomes, warnings)
+    paper = _merge(answers)
+    if ident.kind == "doi":
+        paper.doi = paper.doi or ident.value
+    elif ident.kind == "arxiv":
+        paper.arxiv_id = paper.arxiv_id or ident.value
+    return Lookup(paper, outcomes, warnings)
+
+
+_RETRACTION_GAP = {
+    "failed": "OpenAlex unavailable",
+    "not_found": "not found in OpenAlex",
+    "skipped": "no DOI or arXiv id to look it up in OpenAlex",
+}
 
 
 def trust_check(identifier: str) -> dict:
@@ -86,102 +137,42 @@ def trust_check(identifier: str) -> dict:
     Semantic Scholar supplies venue, citations and author h-index; OpenAlex adds the
     retraction flag and the source type. Either may be missing. A proposal, not a ruling.
     """
-    warnings: list[str] = []
-    d = _try(
-        lambda: sources.get_s2_paper(identifier, "influentialCitationCount,authors.hIndex"),
-        "semantic_scholar",
-        warnings,
-    )
-    p = sources._from_s2(d) if d else None
-    oa_id = sources.openalex_work_id(identifier, p.doi if p else None)
-    oa = _try(lambda: sources.get_openalex_work(oa_id), "openalex", warnings) if oa_id else None
-
-    if d is None and oa is None:
-        if warnings:
-            raise RuntimeError("; ".join(warnings))
+    found = lookup(identifier)
+    p = found.paper
+    if p is None:
         return {"verdict": "LOW", "reasons": ["not found on Semantic Scholar or OpenAlex"], "found": False}
-
-    loc_source = ((oa or {}).get("primary_location") or {}).get("source") or {}
-    source_type = loc_source.get("type")  # journal | conference | repository | ...
-    venue = ((p.venue if p else None) or "").strip()
-    if not venue and source_type in ("journal", "conference"):
-        venue = loc_source.get("display_name") or ""
-    preprint = (
-        venue.lower() in ("", "arxiv", "arxiv.org", "arxiv e-prints")
-        or source_type == "repository"
-        and not venue
-    )
-    authors = p.authors if p else []
-    arxiv_id = (p.arxiv_id if p else None) or (
-        sources.s2_identifier(identifier)[6:]
-        if sources.s2_identifier(identifier).startswith("ARXIV:")
-        else None
-    )
-    h_values = [a["hIndex"] for a in (d or {}).get("authors") or [] if a.get("hIndex") is not None]
-    max_h = max(h_values, default=None)
-    retracted = bool((oa or {}).get("is_retracted"))
-    venues = _venues()
-    reasons: list[str] = []
-
-    if retracted:
-        verdict = "LOW"
-        reasons.append("retracted according to OpenAlex")
-    elif not preprint and _matches(venue, venues["suspect"]):
-        verdict = "LOW"
-        reasons.append(f"venue '{venue}' is on the suspect list")
-    elif not preprint and _matches(venue, venues["reputable"]) and authors:
-        verdict = "HIGH"
-        reasons.append(f"peer-reviewed at reputable venue '{venue}'")
-    elif not preprint:
-        verdict = "MEDIUM"
-        reasons.append(f"venue '{venue}' is not on the reputable list (mid-tier or unknown)")
-    elif arxiv_id and max_h is not None and max_h >= 10:
-        verdict = "MEDIUM"
-        reasons.append(f"arXiv preprint; best author h-index {max_h}")
-    elif arxiv_id:
-        verdict = "LOW"
-        reasons.append("arXiv preprint without verifiable established authors")
-    else:
-        verdict = "LOW"
-        reasons.append("no venue and no arXiv id")
-    if d is not None and not authors:
-        reasons.append("no authors listed")
-    if oa is None:
-        if any(w.startswith("openalex") for w in warnings):
-            why = "OpenAlex unavailable"
-        elif oa_id:
-            why = "not found in OpenAlex"
-        else:
-            why = "no DOI or arXiv id to look it up in OpenAlex"
-        reasons.append(f"retraction status unknown ({why})")
-
+    verdict, reasons = propose_verdict(p)
+    if p.retracted is None:
+        reasons.append(f"retraction status unknown ({_RETRACTION_GAP[found.outcomes['openalex']]})")
     return {
         "verdict": verdict,
         "reasons": reasons,
-        "warnings": warnings,
+        "warnings": found.warnings,
         "found": True,
-        "title": (p.title if p else None) or (oa or {}).get("display_name"),
-        "year": (p.year if p else None) or (oa or {}).get("publication_year"),
-        "venue": venue or None,
-        "peer_reviewed": not preprint,
-        "retracted": retracted if oa is not None else None,
-        "source_type": source_type,
-        "in_doaj": loc_source.get("is_in_doaj"),
-        "citations": p.citations if p and p.citations is not None else (oa or {}).get("cited_by_count"),
-        "citations_openalex": (oa or {}).get("cited_by_count"),
-        "influential_citations": (d or {}).get("influentialCitationCount"),
-        "max_author_h_index": max_h,
-        "semantic_scholar_url": f"https://www.semanticscholar.org/paper/{p.s2_id}" if p and p.s2_id else None,
-        "openalex_id": (oa or {}).get("id"),
+        "title": p.title or None,
+        "year": p.year,
+        "venue": p.venue,
+        "peer_reviewed": not is_preprint(p),
+        "retracted": p.retracted,
+        "source_type": p.source_type,
+        "in_doaj": p.in_doaj,
+        "citations": p.citations,
+        "citations_openalex": p.citations_openalex,
+        "influential_citations": p.influential_citations,
+        "max_author_h_index": p.max_author_h_index,
+        "semantic_scholar_url": f"https://www.semanticscholar.org/paper/{p.s2_id}" if p.s2_id else None,
+        "openalex_id": p.openalex_id,
     }
 
 
 def _load_paper(identifier: str, paper_id: str | None) -> Paper:
-    """Metadata for naming and PDF lookup; skips Semantic Scholar when the arXiv id suffices."""
-    ident = sources.s2_identifier(identifier)
-    if ident.startswith("ARXIV:") and paper_id:
-        return Paper(title="", authors=[], arxiv_id=ident[6:])
-    return sources._from_s2(sources.get_s2_paper(identifier))
+    """Metadata for naming and PDF lookup; skips the lookup when the arXiv id suffices."""
+    ident = sources.Identifier.parse(identifier)
+    if ident.kind == "arxiv" and paper_id:
+        return Paper(title="", authors=[], arxiv_id=ident.value)
+    if (paper := lookup(identifier).paper) is None:
+        raise RuntimeError(f"{identifier} not found on Semantic Scholar or OpenAlex")
+    return paper
 
 
 def _pdf_url(p: Paper) -> str:
