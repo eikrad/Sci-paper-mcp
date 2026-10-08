@@ -6,7 +6,7 @@ from pathlib import Path
 
 import httpx
 
-from . import config, core
+from . import config, core, untrusted
 from .brain import (
     Brain,
     SchemaError,
@@ -116,7 +116,9 @@ def prepare_ingest(
         warnings.append(f"related pages do not exist: {missing}")
     related_ok = [p for p in related_pages if p not in missing]
 
-    abstract = abstract or paper.abstract or ""
+    paper.title, title_flags = untrusted.scrub("title", paper.title)  # both end up in the graph
+    abstract, abstract_flags = untrusted.scrub("abstract", abstract or paper.abstract or "")
+    warnings += title_flags + abstract_flags
     if not abstract:
         warnings.append("no abstract from the sources or the agent; Abstract section left empty")
 

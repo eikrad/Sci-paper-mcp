@@ -106,6 +106,9 @@ Fixes:
 - `trust_check` no longer reports OpenAlex's split preprint citation count as `citations`.
 - `fetch_pdf` falls back to OpenAlex when Semantic Scholar is down or rate-limited.
 - `fetch_pdf` refuses a download over 100 MB and saves nothing; the PDF link comes from a third party.
+- Titles and abstracts are treated as third-party text ([ADR 0008](docs/adr/0008-third-party-text-is-data.md)):
+  invisible characters (zero-width, bidi controls, Unicode tag characters) are removed, and text that addresses the
+  agent ("ignore previous instructions", `<IMPORTANT>` tags, ...) is reported in `warnings`, not blocked.
 - `trust_check` finds the retraction status of arXiv papers published in a journal: OpenAlex is asked under the
   journal DOI first, the arXiv DOI second.
 - The highlights embed of a paper ingested before its PDF now matches the PDF name for DOI-only papers and old-style arXiv ids.

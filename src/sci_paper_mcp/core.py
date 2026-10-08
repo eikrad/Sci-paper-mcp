@@ -8,7 +8,7 @@ from typing import Literal
 
 import httpx
 
-from . import config, sources
+from . import config, sources, untrusted
 from .brain import Brain, pdf_name, resolve_paper_id, save_pdf
 from .sources import Paper
 from .verdict import is_preprint, propose_verdict
@@ -67,10 +67,17 @@ def search_papers(
             found += searchers[name](query, limit)
         except httpx.HTTPError as e:  # one source down must not kill the search
             errors.append(f"{name}: {e}")
-    results = [p.to_dict() for p in _dedupe(found)[:limit]]
-    if errors and not results:
+    papers = _dedupe(found)[:limit]
+    if errors and not papers:
         raise RuntimeError("; ".join(errors))
-    return {"results": results, "warnings": errors}
+    flags = []
+    for i, p in enumerate(papers, 1):
+        p.title, w = untrusted.scrub(f"result {i} title", p.title)
+        flags += w
+        if p.abstract:
+            p.abstract, w = untrusted.scrub(f"result {i} abstract", p.abstract)
+            flags += w
+    return {"results": [p.to_dict() for p in papers], "warnings": errors + flags}
 
 
 Outcome = Literal["found", "not_found", "failed", "skipped"]
@@ -162,12 +169,13 @@ def trust_check(identifier: str) -> dict:
     verdict, reasons = propose_verdict(p)
     if p.retracted is None:
         reasons.append(f"retraction status unknown ({_RETRACTION_GAP[found.outcomes['openalex']]})")
+    title, title_flags = untrusted.scrub("title", p.title)
     return {
         "verdict": verdict,
         "reasons": reasons,
-        "warnings": found.warnings,
+        "warnings": found.warnings + title_flags,
         "found": True,
-        "title": p.title or None,
+        "title": title or None,
         "year": p.year,
         "venue": p.venue,
         "peer_reviewed": not is_preprint(p),
