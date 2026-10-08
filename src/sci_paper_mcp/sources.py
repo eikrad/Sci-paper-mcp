@@ -67,9 +67,15 @@ def _get(
     return r
 
 
+def _arxiv_query(query: str) -> str:
+    """AND every term (or "quoted phrase"); a bare `all:a b c` only binds the field to `a`."""
+    terms = re.findall(r'"[^"]+"|\S+', query)
+    return " AND ".join(f"all:{t}" for t in terms)
+
+
 def search_arxiv(query: str, limit: int) -> list[Paper]:
     with _client() as c:
-        r = c.get(ARXIV_API, params={"search_query": f"all:{query}", "max_results": limit})
+        r = c.get(ARXIV_API, params={"search_query": _arxiv_query(query), "max_results": limit})
         r.raise_for_status()
     papers = []
     for e in ET.fromstring(r.text).findall("a:entry", ATOM):

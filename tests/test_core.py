@@ -254,3 +254,18 @@ def test_s2_key_not_sent_to_arxiv(monkeypatch):
     route = respx.get(sources.ARXIV_API).respond(text=ATOM)
     sources.search_arxiv("rag", 1)
     assert "x-api-key" not in route.calls[0].request.headers
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("model context protocol security", "all:model AND all:context AND all:protocol AND all:security"),
+        ('security "model context protocol"', 'all:security AND all:"model context protocol"'),
+        ("  rag  ", "all:rag"),
+    ],
+)
+@respx.mock
+def test_arxiv_query_requires_every_term_to_match(query, expected):
+    route = respx.get(sources.ARXIV_API).respond(text="<feed xmlns='http://www.w3.org/2005/Atom'/>")
+    sources.search_arxiv(query, 3)
+    assert route.calls[0].request.url.params["search_query"] == expected
