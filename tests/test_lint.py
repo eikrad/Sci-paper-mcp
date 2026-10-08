@@ -141,3 +141,49 @@ def test_lint_never_modifies_the_brain(healthy_brain):
     before = {p: p.read_bytes() for p in healthy_brain.rglob("*") if p.is_file()}
     lint(healthy_brain, today=TODAY)
     assert {p: p.read_bytes() for p in healthy_brain.rglob("*") if p.is_file()} == before
+
+
+def index_page(*queries):
+    return "- ## Sources\n" + "".join(f"\t- {{{{query {q}}}}}\n" for q in queries)
+
+
+PAPER_QUERY = "(and (page-property source-type paper) (page-property topic rag-foundations))"
+
+
+def index_brain(make_brain, index, **paper_overrides):
+    return make_brain(
+        pages={
+            "Index": index,
+            "Sources/Research/X": paper_page(paper_overrides),
+            "Concepts/Y": "- [[Sources/Research/X]]",
+        },
+        assets=["RAG-Lewis2020-2005.11401.pdf"],
+    )
+
+
+def test_page_matched_by_an_index_query_is_covered(make_brain):
+    brain = index_brain(make_brain, index_page(PAPER_QUERY))
+    assert findings(brain, "index") == []
+
+
+def test_page_matched_by_no_index_query_is_reported(make_brain):
+    brain = index_brain(make_brain, index_page(PAPER_QUERY), topic="rag-retrieval")
+    [f] = findings(brain, "index")
+    assert f["page"] == "Sources/Research/X"
+    assert "topic" in f["message"] and "rag-retrieval" in f["message"]
+
+
+def test_single_property_query_covers_every_page_with_that_value(make_brain):
+    brain = index_brain(make_brain, index_page("(page-property topic rag-retrieval)"), topic="rag-retrieval")
+    assert findings(brain, "index") == []
+
+
+def test_all_terms_of_an_and_query_must_match(make_brain):
+    brain = index_brain(make_brain, index_page(PAPER_QUERY), **{"source-type": "book"})
+    assert len(findings(brain, "index")) == 1
+
+
+def test_query_with_unsupported_operators_is_flagged_as_not_understood(make_brain):
+    brain = index_brain(make_brain, index_page(PAPER_QUERY, "(or (page-property topic a) (task TODO))"))
+    [f] = findings(brain, "index")
+    assert f["severity"] == "todo" and "not understood" in f["message"]

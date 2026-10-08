@@ -25,6 +25,21 @@ def _pages(root: Path) -> dict[str, str]:
     return {_title(p): p.read_text() for p in sorted((root / "pages").glob("*.md"))}
 
 
+_TERM = r"\(page-property\s+([^\s()]+)\s+([^\s()]+)\)"
+
+
+def _index_queries(index: str) -> tuple[list[dict[str, str]], list[str]]:
+    """Understood queries as {property: value} conjunctions, plus the queries we cannot evaluate."""
+    understood, unknown = [], []
+    for body in re.findall(r"\{\{query\s+(.+?)\}\}", index):
+        body = body.strip()
+        if re.fullmatch(_TERM, body) or re.fullmatch(rf"\(and(\s+{_TERM})+\s*\)", body):
+            understood.append(dict(re.findall(_TERM, body)))
+        else:
+            unknown.append(body)
+    return understood, unknown
+
+
 def _parse_date(value: str | None) -> date | None:
     try:
         return date.fromisoformat(value) if value else None
@@ -66,6 +81,9 @@ def lint(root: Path | None, today: date | None = None) -> dict:
         extra = sorted(in_templates - set(schema.taxonomy))
         if extra:
             add("drift", "Templates", f"Templates topic list has topics not in AGENTS.md: {', '.join(extra)}")
+    index_queries, unknown_queries = _index_queries(pages.get("Index", ""))
+    for q in unknown_queries:
+        add("index", "Index", f"query not understood, coverage not checked for it: {q}", "todo")
     known = {t.lower() for t in pages}
     for title, text in pages.items():
         if not title.startswith(RESEARCH):
@@ -94,6 +112,13 @@ def lint(root: Path | None, today: date | None = None) -> dict:
             age = (today - d).days
             if age > STALE_DAYS:
                 add("stale", title, f"status needs-update for {age} days (limit {STALE_DAYS})", "warning")
+        if index_queries and not any(all(props.get(k) == v for k, v in q.items()) for q in index_queries):
+            add(
+                "index",
+                title,
+                f"matched by no Index query (source-type '{props.get('source-type')}', "
+                f"topic '{props.get('topic')}'); check both properties",
+            )
         pdf = props.get("pdf-path")
         if pdf and pdf != "not-found" and not (schema.root / "pages" / pdf).resolve().exists():
             add("pdf", title, f"pdf-path points to a missing file: {pdf}")
