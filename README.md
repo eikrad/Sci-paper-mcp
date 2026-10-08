@@ -98,6 +98,8 @@ share one set of API calls.
 Fixes:
 - `trust_check` no longer reports OpenAlex's split preprint citation count as `citations`.
 - `fetch_pdf` falls back to OpenAlex when Semantic Scholar is down or rate-limited.
+- `trust_check` finds the retraction status of arXiv papers published in a journal: OpenAlex is asked under the
+  journal DOI first, the arXiv DOI second.
 - The highlights embed of a paper ingested before its PDF now matches the PDF name for DOI-only papers and old-style arXiv ids.
 - Search and `trust_check` results carry the OpenAlex signals (`retracted`, `source_type`, ...).
 
