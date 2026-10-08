@@ -103,12 +103,14 @@ Fixes:
 ### v0.1.0
 
 First release. Five tools (`search_papers`, `trust_check`, `fetch_pdf`, `prepare_ingest`, `lint`), a CLI and tests at
-every seam (93 offline tests, 3 opt-in live tests).
+every seam (170 offline tests, 3 opt-in live tests).
 
 - Search across arXiv, Semantic Scholar and OpenAlex, merged and de-duplicated.
 - Trust verdict HIGH/MEDIUM/LOW with reasons, using Semantic Scholar and OpenAlex (retraction flag); venues in `venues.toml`.
 - `prepare_ingest` validates against the brain's `AGENTS.md`/`Templates`, refuses when Logseq has a different graph open and returns the calls for `mcp-logseq`.
-- `lint` checks schema, PDF paths, backlinks, Related Pages links, empty highlights, staleness, Index coverage and `AGENTS.md`/`Templates` drift.
+- `lint` checks schema, PDF paths, backlinks, Related Pages links, empty highlights, staleness, Index coverage, `AGENTS.md`/`Templates` drift and page file names (duplicate files for one page, `___` names that Logseq will not read as `/`).
 
-Known limits: the open-graph check and the property placement of `create_page` have only been tested against mocks, not a live Logseq;
-Semantic Scholar throttles anonymous clients (set `S2_API_KEY`); `radiation-brain` needs its own `AGENTS.md` first.
+Verified live (2026-10-08): the open-graph check, and that `create_page` of `mcp-logseq` 1.10.0 writes the properties at the top of
+the file, with six papers ingested into a real graph. Known limits: Semantic Scholar throttles anonymous clients (set `S2_API_KEY`);
+`radiation-brain` needs its own `AGENTS.md` first; if a graph has `___` page files but no `:file-name-format :triple-lowbar` in
+`logseq/config.edn`, an append through `mcp-logseq` to such a page creates a new `%2F` file instead (`lint` flags this).

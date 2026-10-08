@@ -134,13 +134,18 @@ def fresh_lookup_memo():
 def make_brain(tmp_path):
     """build(pages={title: text}, assets=[filenames]) -> brain root."""
 
-    def build(pages=None, assets=(), agents=AGENTS, templates=TEMPLATES):
+    def build(pages=None, assets=(), agents=AGENTS, templates=TEMPLATES, config_edn=None, raw_files=None):
         (tmp_path / "pages").mkdir(exist_ok=True)
         (tmp_path / "assets" / "papers").mkdir(parents=True, exist_ok=True)
         (tmp_path / "AGENTS.md").write_text(agents)
         (tmp_path / "pages" / "Templates.md").write_text(templates)
         for title, text in (pages or {}).items():
             page_file(tmp_path, title).write_text(text)
+        for filename, text in (raw_files or {}).items():
+            (tmp_path / "pages" / filename).write_text(text)
+        if config_edn is not None:
+            (tmp_path / "logseq").mkdir(exist_ok=True)
+            (tmp_path / "logseq" / "config.edn").write_text(config_edn)
         for name in assets:
             (tmp_path / "assets" / "papers" / name).write_bytes(b"%PDF-1")
         return tmp_path

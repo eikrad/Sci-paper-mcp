@@ -187,3 +187,37 @@ def test_query_with_unsupported_operators_is_flagged_as_not_understood(make_brai
     brain = index_brain(make_brain, index_page(PAPER_QUERY, "(or (page-property topic a) (task TODO))"))
     [f] = findings(brain, "index")
     assert f["severity"] == "todo" and "not understood" in f["message"]
+
+
+def test_triple_lowbar_file_without_pinned_format_is_reported(make_brain):
+    brain = make_brain(raw_files={"Concepts___Foo.md": "- x"}, config_edn="{:preferred-format :markdown}")
+    [f] = findings(brain, "files")
+    assert f["severity"] == "warning" and "Concepts___Foo.md" in f["message"]
+    assert "file-name-format" in f["message"]
+
+
+def test_triple_lowbar_file_is_fine_when_the_format_is_pinned(make_brain):
+    brain = make_brain(
+        raw_files={"Concepts___Foo.md": "- x"}, config_edn="{:file-name-format :triple-lowbar}"
+    )
+    assert findings(brain, "files") == []
+
+
+def test_triple_lowbar_file_without_any_logseq_config_is_reported(make_brain):
+    brain = make_brain(raw_files={"Concepts___Foo.md": "- x"})
+    assert len(findings(brain, "files")) == 1
+
+
+def test_two_files_for_one_page_title_are_an_error(make_brain):
+    brain = make_brain(
+        raw_files={"Concepts___Foo.md": "- real", "Concepts%2FFoo.md": "- stray"},
+        config_edn="{:file-name-format :triple-lowbar}",
+    )
+    [f] = findings(brain, "files")
+    assert f["severity"] == "error" and f["page"] == "Concepts/Foo"
+    assert "Concepts___Foo.md" in f["message"] and "Concepts%2FFoo.md" in f["message"]
+
+
+def test_percent_encoded_files_alone_need_no_config(make_brain):
+    brain = make_brain(raw_files={"Concepts%2FFoo.md": "- x"})
+    assert findings(brain, "files") == []
