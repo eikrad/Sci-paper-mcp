@@ -1,0 +1,27 @@
+name: Protect main
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  require-staging:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch is staging (or the release PR)
+        # Passed via env, not inlined: a branch name is attacker-controlled text.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # release-please opens its release PR from release-please--branches--main--components--…
+          case "$HEAD_REF" in release-please--branches--main*)
+            echo "✅ Release PR from release-please — allowed to merge into main."
+            exit 0;;
+          esac
+          if [ "$HEAD_REF" != "staging" ]; then
+            echo "❌ PRs into main must come from 'staging', not '$HEAD_REF'."
+            echo "   Workflow: feature branch → staging → main"
+            exit 1
+          fi
+          echo "✅ Source branch is staging — allowed to merge into main."

@@ -79,6 +79,9 @@ uv run pytest            # add -m live to hit the real APIs
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs ruff and pytest. To lint your graph in its own
 repo's CI, copy [examples/second-brain-lint.yml](examples/second-brain-lint.yml).
 
+Branches: feature → `staging` → `main`. PRs into `main` come only from `staging`, and every commit needs a
+Conventional Commit prefix (`feat:`, `fix:`, `refactor:`, `docs:`, …); CI checks both.
+
 ## Releases
 
 ### Unreleased

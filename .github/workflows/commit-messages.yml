@@ -1,0 +1,27 @@
+name: Commit messages
+
+# Every commit carries a Conventional Commit prefix, so versions and release
+# notes can be derived from the history.
+on:
+  pull_request:
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Every commit starts with a Conventional Commit prefix
+        run: |
+          pattern='^(feat|fix|perf|security|revert|docs|chore|build|ci|test|refactor|style)(\([^)]+\))?!?: .+'
+          bad=$(git log --no-merges --format='%h %s' \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            | grep -Ev "^[0-9a-f]+ ${pattern#^}" || true)
+          if [ -n "$bad" ]; then
+            echo "❌ These commits lack a Conventional Commit prefix (e.g. 'fix: …', 'feat(api): …', 'feat!: …'):"
+            echo "$bad"
+            echo "Reword them, e.g. with 'git rebase -i', and force-push."
+            exit 1
+          fi
+          echo "✅ All commits follow Conventional Commits."
