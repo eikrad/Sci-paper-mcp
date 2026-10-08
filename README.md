@@ -30,7 +30,10 @@ Needs [uv](https://docs.astral.sh/uv/). Nothing to install separately: point you
 ```
 
 Pages are written with [`mcp-logseq`](https://github.com/ergut/mcp-logseq), which this server is meant to run next to
-(`uv run --no-project --with mcp-logseq mcp-logseq`; the old `mcp<2` pin is no longer needed since 1.9.0).
+(`uv run --no-project --with mcp-logseq==1.10.0 mcp-logseq`; the old `mcp<2` pin is no longer needed since 1.9.0).
+Pin the version, as the tag above does for this server: an MCP server's tool descriptions go straight into the
+agent's context, so an update should be a decision, not a side effect of a restart. 1.10.0 is the version
+verified live (see v0.1.0 below).
 
 ## Tools
 
