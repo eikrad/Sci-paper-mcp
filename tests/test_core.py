@@ -13,6 +13,7 @@ ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 
 @respx.mock
 def test_search_merges_sources():
+    _oa_search()
     respx.get(sources.ARXIV_API).respond(text=ATOM)
     respx.get(f"{sources.S2_API}/paper/search").respond(
         json={
@@ -46,14 +47,14 @@ def no_sleep(monkeypatch):
         ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
         ("Social Science Computer Review", "MEDIUM"),
         ("Oracle Journal", "MEDIUM"),
-    ("USENIX Security Symposium", "HIGH"),
-    ("IEEE Symposium on Security and Privacy", "HIGH"),
-    ("Conference on Computer and Communications Security", "HIGH"),
-    ("ACM SIGSAC Conference on Computer and Communications Security", "HIGH"),
-    ("Network and Distributed System Security Symposium", "HIGH"),
-    ("Journal of Information Security and Applications", "MEDIUM"),
-    ("Security and Communication Networks", "MEDIUM"),
-    ("International Conference on Security and Privacy in Smart Cities", "MEDIUM"),
+        ("USENIX Security Symposium", "HIGH"),
+        ("IEEE Symposium on Security and Privacy", "HIGH"),
+        ("Conference on Computer and Communications Security", "HIGH"),
+        ("ACM SIGSAC Conference on Computer and Communications Security", "HIGH"),
+        ("Network and Distributed System Security Symposium", "HIGH"),
+        ("Journal of Information Security and Applications", "MEDIUM"),
+        ("Security and Communication Networks", "MEDIUM"),
+        ("International Conference on Security and Privacy in Smart Cities", "MEDIUM"),
     ],
 )
 @respx.mock
@@ -65,6 +66,7 @@ def test_venue_matching(venue, expected):
 
 @respx.mock
 def test_search_survives_one_source_down():
+    _oa_search()
     respx.get(sources.ARXIV_API).respond(text=ATOM)
     respx.get(f"{sources.S2_API}/paper/search").respond(429)
     out = core.search_papers("rag")
@@ -99,6 +101,10 @@ def test_s2_gives_up_with_hint(monkeypatch):
 )
 def test_identifier_mapping(raw, expected):
     assert sources.s2_identifier(raw) == expected
+
+
+def _oa_search(*works, status=200):
+    return respx.get(f"{sources.OPENALEX_API}/works").respond(status, json={"results": list(works)})
 
 
 def _oa(status=404, **fields):
@@ -295,3 +301,81 @@ def test_openalex_outage_is_reported_as_unavailable():
     _oa(500)
     r = core.trust_check("2512.08290")
     assert any("OpenAlex unavailable" in x for x in r["reasons"]) and r["warnings"]
+
+
+JOURNAL_WORK = {
+    "doi": "https://doi.org/10.1109/TDSC.2026.3695553",
+    "display_name": "MCPXkit",
+    "publication_year": 2026,
+    "authorships": [{"author": {"display_name": "Yongjian Guo"}}],
+    "cited_by_count": 4,
+    "abstract_inverted_index": {"A": [0], "toolkit": [1], "for": [2], "MCP": [3]},
+    "primary_location": {
+        "pdf_url": None,
+        "source": {"type": "journal", "display_name": "IEEE Transactions on Dependable and Secure Computing"},
+    },
+    "best_oa_location": {"pdf_url": "https://example.org/mcpxkit.pdf"},
+}
+ARXIV_WORK = {
+    "doi": "https://doi.org/10.48550/arxiv.2604.07551",
+    "display_name": "MCP-DPT",
+    "publication_year": 2026,
+    "authorships": [{"author": {"display_name": "M. Rostamzadeh"}}],
+    "cited_by_count": 18,
+    "abstract_inverted_index": None,
+    "primary_location": {
+        "pdf_url": "https://arxiv.org/pdf/2604.07551",
+        "source": {"type": "repository", "display_name": "arXiv (Cornell University)"},
+    },
+}
+
+
+@respx.mock
+def test_openalex_journal_work_is_mapped():
+    _oa_search(JOURNAL_WORK)
+    [p] = sources.search_openalex("mcp", 5)
+    assert p.doi == "10.1109/tdsc.2026.3695553" and p.arxiv_id is None
+    assert p.venue == "IEEE Transactions on Dependable and Secure Computing"
+    assert p.abstract == "A toolkit for MCP" and p.citations == 4
+    assert p.authors == ["Yongjian Guo"] and p.pdf_url == "https://example.org/mcpxkit.pdf"
+    assert p.source == "openalex"
+
+
+@respx.mock
+def test_openalex_preprint_has_no_venue_and_untrusted_citations():
+    _oa_search(ARXIV_WORK)
+    [p] = sources.search_openalex("mcp", 5)
+    assert p.arxiv_id == "2604.07551" and p.doi is None
+    assert p.venue is None and p.citations is None  # counts are split across versions
+    assert p.pdf_url == "https://arxiv.org/pdf/2604.07551"
+
+
+@respx.mock
+def test_openalex_search_sends_query_and_limit():
+    route = _oa_search()
+    sources.search_openalex("model context protocol", 7)
+    params = route.calls[0].request.url.params
+    assert params["search"] == "model context protocol" and params["per_page"] == "7"
+
+
+@respx.mock
+def test_search_merges_openalex_venue_into_the_arxiv_hit():
+    arxiv = ATOM.replace("2005.11401", "2604.07551")
+    respx.get(sources.ARXIV_API).respond(text=arxiv)
+    respx.get(f"{sources.S2_API}/paper/search").respond(429)
+    journal = JOURNAL_WORK | {"doi": "https://doi.org/10.48550/arxiv.2604.07551"}
+    journal["primary_location"] = {"pdf_url": None, "source": {"type": "journal", "display_name": "TDSC"}}
+    _oa_search(journal)
+    out = core.search_papers("rag")
+    [p] = out["results"]
+    assert p["arxiv_id"] == "2604.07551" and p["venue"] == "TDSC" and p["abstract"]
+    assert p["pdf_url"] and any("semantic_scholar" in w for w in out["warnings"])
+
+
+@respx.mock
+def test_search_survives_openalex_being_down():
+    respx.get(sources.ARXIV_API).respond(text=ATOM)
+    respx.get(f"{sources.S2_API}/paper/search").respond(json={"data": []})
+    _oa_search(status=500)
+    out = core.search_papers("rag")
+    assert out["results"] and any("openalex" in w for w in out["warnings"])

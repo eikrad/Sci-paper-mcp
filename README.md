@@ -11,7 +11,7 @@ Design decisions: [docs/adr](docs/adr). Vocabulary: [GLOSSARY.md](GLOSSARY.md).
 
 | Tool | What it does |
 |---|---|
-| `search_papers` | arXiv + Semantic Scholar, merged and de-duplicated; `warnings` lists failed sources |
+| `search_papers` | arXiv, Semantic Scholar and OpenAlex, merged and de-duplicated (richer sources fill gaps); `warnings` lists failed sources |
 | `trust_check` | Proposes HIGH/MEDIUM/LOW with reasons; merges Semantic Scholar and OpenAlex |
 | `fetch_pdf` | Saves `assets/papers/<PAPER-ID>-<id>.pdf`, never overwrites |
 | `prepare_ingest` | Validates against the brain's `AGENTS.md`, returns `create_page`/`update_page` calls for `mcp-logseq`. Writes nothing |

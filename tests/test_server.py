@@ -30,6 +30,7 @@ async def test_tool_parameters_are_stable(client):
 @respx.mock
 async def test_search_papers_call_returns_results_and_warnings(client):
     respx.get(sources.ARXIV_API).respond(text="<feed xmlns='http://www.w3.org/2005/Atom'/>")
+    respx.get(f"{sources.OPENALEX_API}/works").respond(json={"results": []})
     respx.get(f"{sources.S2_API}/paper/search").respond(
         json={"data": [{"paperId": "x", "title": "RAG", "year": 2020, "authors": []}]}
     )

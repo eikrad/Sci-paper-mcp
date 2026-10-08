@@ -178,3 +178,53 @@ def get_openalex_work(work_id: str) -> dict:
             "OPENALEX_API_KEY",
         )
     return r.json()
+
+
+OPENALEX_SEARCH_FIELDS = (
+    "id,doi,display_name,publication_year,authorships,primary_location,"
+    "best_oa_location,cited_by_count,abstract_inverted_index"
+)
+_ARXIV_DATACITE = re.compile(r"^10\.48550/arxiv\.(.+)$", re.I)
+
+
+def _abstract_from_index(index: dict | None) -> str | None:
+    """OpenAlex ships abstracts as {word: [positions]}; put the words back in order."""
+    if not index:
+        return None
+    by_position = {pos: word for word, positions in index.items() for pos in positions}
+    return " ".join(by_position[i] for i in sorted(by_position)) or None
+
+
+def _from_openalex(w: dict) -> Paper:
+    doi = re.sub(r"^https?://doi\.org/", "", w.get("doi") or "").lower() or None
+    arxiv_id = None
+    if doi and (m := _ARXIV_DATACITE.match(doi)):
+        arxiv_id, doi = m[1], None
+    primary = w.get("primary_location") or {}
+    source = primary.get("source") or {}
+    is_repository = source.get("type") == "repository"
+    return Paper(
+        title=w.get("display_name") or "",
+        authors=[(a.get("author") or {}).get("display_name", "") for a in w.get("authorships") or []],
+        year=w.get("publication_year"),
+        abstract=_abstract_from_index(w.get("abstract_inverted_index")),
+        venue=None if is_repository else source.get("display_name"),
+        doi=doi,
+        arxiv_id=arxiv_id,
+        # preprint counts are split across versions, so they would understate the paper
+        citations=None if is_repository else w.get("cited_by_count"),
+        pdf_url=primary.get("pdf_url") or (w.get("best_oa_location") or {}).get("pdf_url"),
+        source="openalex",
+    )
+
+
+def search_openalex(query: str, limit: int) -> list[Paper]:
+    with _client() as c:
+        r = _get(
+            c,
+            f"{OPENALEX_API}/works",
+            {"search": query, "per_page": limit, "select": OPENALEX_SEARCH_FIELDS},
+            _openalex_headers(),
+            "OPENALEX_API_KEY",
+        )
+    return [_from_openalex(w) for w in r.json().get("results", [])]

@@ -12,18 +12,22 @@ from .sources import Paper
 UNPAYWALL_API = "https://api.unpaywall.org/v2"
 
 
+_PRIORITY = {"semantic_scholar": 0, "openalex": 1, "arxiv": 2}  # richest metadata first
+_FILLABLE = ("venue", "citations", "abstract", "year", "pdf_url", "doi", "arxiv_id")
+
+
 def _dedupe(papers: list[Paper]) -> list[Paper]:
-    """Merge by arXiv id / DOI / title; Semantic Scholar entries win (richer metadata)."""
+    """Merge by arXiv id / DOI / title; the richest source wins and lower ones fill its gaps."""
     seen: dict[str, Paper] = {}
-    for p in sorted(papers, key=lambda p: p.source != "semantic_scholar"):
+    for p in sorted(papers, key=lambda p: _PRIORITY.get(p.source, 9)):
         keys = [k for k in (p.arxiv_id, p.doi and p.doi.lower(), p.title.lower().strip()) if k]
         hit = next((seen[k] for k in keys if k in seen), None)
         if hit is None:
             hit = p
         else:
-            hit.arxiv_id = hit.arxiv_id or p.arxiv_id
-            hit.doi = hit.doi or p.doi
-            hit.pdf_url = hit.pdf_url or p.pdf_url
+            for attr in _FILLABLE:
+                if getattr(hit, attr) is None:
+                    setattr(hit, attr, getattr(p, attr))
         for k in keys:
             seen[k] = hit
     unique: list[Paper] = []
@@ -34,11 +38,15 @@ def _dedupe(papers: list[Paper]) -> list[Paper]:
 
 
 def search_papers(
-    query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar")
+    query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar", "openalex")
 ) -> dict:
     found: list[Paper] = []
     errors = []
-    searchers = {"arxiv": sources.search_arxiv, "semantic_scholar": sources.search_semantic_scholar}
+    searchers = {
+        "arxiv": sources.search_arxiv,
+        "semantic_scholar": sources.search_semantic_scholar,
+        "openalex": sources.search_openalex,
+    }
     for name in sources_:
         try:
             found += searchers[name](query, limit)

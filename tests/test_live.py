@@ -16,3 +16,8 @@ def test_trust_check_reads_both_sources():
     out = core.trust_check("2005.11401")  # Lewis et al., RAG
     assert out["verdict"] in {"HIGH", "MEDIUM", "LOW"}
     assert out["retracted"] is False
+
+
+def test_openalex_search_returns_papers():
+    out = core.search_papers("retrieval augmented generation", limit=3, sources_=("openalex",))
+    assert out["results"] and out["results"][0]["source"] == "openalex"
