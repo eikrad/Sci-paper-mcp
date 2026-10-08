@@ -11,7 +11,7 @@ mcp = FastMCP("sci-paper-mcp")
 
 @mcp.tool
 def search_papers(query: str, limit: int = 10) -> dict:
-    """Search arXiv and Semantic Scholar; results are merged and de-duplicated.
+    """Search arXiv, Semantic Scholar and OpenAlex; results are merged and de-duplicated.
 
     `warnings` lists sources that failed.
     """
@@ -29,66 +29,57 @@ def trust_check(identifier: str) -> dict:
 
 @mcp.tool
 def fetch_pdf(identifier: str, paper_id: str | None = None, dest_dir: str | None = None) -> dict:
-    """Download the open-access PDF (arXiv, Semantic Scholar, Unpaywall).
+    """Download the open-access PDF (arXiv, Semantic Scholar, OpenAlex, Unpaywall).
 
     Saves to assets/papers/<PAPER-ID>-<id>.pdf and never overwrites. paper_id such as
-    'RAG-Lewis2020' is derived from first author and year if omitted.
+    'RAG-Lewis2020' is derived from first author and year if omitted. The paper is looked up in
+    Semantic Scholar and OpenAlex, so either may be down.
     """
-    return core.fetch_pdf(identifier, paper_id, dest_dir)
+    return core.fetch_pdf(config.second_brain_path(), identifier, paper_id, dest_dir)
 
 
 @mcp.tool
 def prepare_ingest(
-    paper_id: str,
-    title: str,
-    authors: list[str],
+    identifier: str,
     topic: str,
     verdict: str,
     verdict_reasoning: str,
-    abstract: str,
     key_points: list[str],
     relevance: str,
     related_pages: list[str],
-    arxiv_id: str | None = None,
-    doi: str | None = None,
-    venue: str | None = None,
-    year: int | None = None,
-    citations: int | None = None,
-    peer_reviewed: bool = False,
-    semantic_scholar_url: str | None = None,
-    pdf_path: str | None = None,
+    paper_id: str | None = None,
     language: str = "en",
     code_url: str | None = None,
+    abstract: str | None = None,
 ) -> dict:
     """Validate against the brain's AGENTS.md and render the paper page. Writes nothing.
 
-    Returns ordered `calls` (create_page, back-link update_page, Log update_page) for the agent to
-    apply via mcp-logseq. pdf_path is the `pdf_path_property` returned by fetch_pdf.
+    You supply the judgement (topic, verdict, key points, relevance, related pages). The server looks
+    the paper up by `identifier` (DOI, arXiv id or S2 id) for title, authors, venue, year, citations
+    and ids, and finds the PDF in assets/papers/ itself, so run fetch_pdf first (with the same
+    paper_id, if you gave one). paper_id defaults to `<FirstAuthor><Year>`, as in fetch_pdf. `abstract`
+    only overrides the looked-up one. `warnings` lists failed sources, a missing abstract and missing
+    related pages.
 
-    Refuses if Logseq has a different graph open than SECOND_BRAIN_PATH (needs LOGSEQ_API_TOKEN).
+    Returns ordered `calls` to apply with mcp-logseq: create_page, one back-link update_page per
+    existing related page, then the Log update_page.
+
+    Refuses if Logseq has a different graph open than SECOND_BRAIN_PATH, or none (needs
+    LOGSEQ_API_TOKEN to check; without it this only warns).
     """
     return _prepare_ingest(
         config.second_brain_path(),
-        paper_id=paper_id,
-        title=title,
-        authors=authors,
+        identifier=identifier,
         topic=topic,
         verdict=verdict,
         verdict_reasoning=verdict_reasoning,
-        abstract=abstract,
         key_points=key_points,
         relevance=relevance,
         related_pages=related_pages,
-        arxiv_id=arxiv_id,
-        doi=doi,
-        venue=venue,
-        year=year,
-        citations=citations,
-        peer_reviewed=peer_reviewed,
-        semantic_scholar_url=semantic_scholar_url,
-        pdf_path=pdf_path,
+        paper_id=paper_id,
         language=language,
         code_url=code_url,
+        abstract=abstract,
     )
 
 

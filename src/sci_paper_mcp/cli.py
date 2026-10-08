@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {
             "search": lambda: core.search_papers(a.query, a.limit),
             "trust": lambda: core.trust_check(a.identifier),
-            "pdf": lambda: core.fetch_pdf(a.identifier, a.paper_id, a.dest),
+            "pdf": lambda: core.fetch_pdf(config.second_brain_path(), a.identifier, a.paper_id, a.dest),
             "lint": lambda: lint(Path(a.brain).expanduser() if a.brain else config.second_brain_path()),
         }[a.cmd]()
     except (RuntimeError, httpx.HTTPError) as e:

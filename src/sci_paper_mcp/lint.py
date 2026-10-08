@@ -7,22 +7,16 @@ import re
 from datetime import date
 from pathlib import Path
 
-from .schema import load_schema
+from .brain import (
+    REQUIRED_PROPERTIES,
+    Brain,
+    embedded_highlights,
+    is_paper_title,
+    names_pdf,
+    parse_properties,
+)
 
-REQUIRED = (
-    "source-type", "document-id", "topic", "language", "status", "date", "url",
-    "trustworthiness", "pdf-path",
-)  # fmt: skip
-RESEARCH = "Sources/Research/"
 STALE_DAYS = 60
-
-
-def _title(path: Path) -> str:
-    return path.stem.replace("%2F", "/").replace("___", "/")
-
-
-def _pages(root: Path) -> dict[str, str]:
-    return {_title(p): p.read_text() for p in sorted((root / "pages").glob("*.md"))}
 
 
 _TERM = r"\(page-property\s+([^\s()]+)\s+([^\s()]+)\)"
@@ -53,28 +47,18 @@ def _related(text: str) -> list[str]:
     return re.findall(r"\[\[([^\]]+)\]\]", m[1]) if m else []
 
 
-def _properties(text: str) -> dict[str, str]:
-    """Page properties: `key:: value` lines before the first block."""
-    props = {}
-    for line in text.splitlines():
-        if line.startswith(("-", "\t", " ")):
-            break
-        if m := re.match(r"^([\w-]+)::\s*(.*)$", line):
-            props[m[1]] = m[2].strip()
-    return props
-
-
 def lint(root: Path | None, today: date | None = None) -> dict:
     today = today or date.today()
-    schema = load_schema(root)
-    pages = _pages(schema.root)
+    brain = Brain(root)
+    schema = brain.schema
+    pages = brain.pages()
     findings: list[dict] = []
 
     def add(check: str, page: str, message: str, severity: str = "error") -> None:
         findings.append({"check": check, "severity": severity, "page": page, "message": message})
 
-    if m := re.search(r"^\s*topic::\s+(.+)$", pages.get("Templates", ""), re.M):
-        in_templates = {v.strip() for v in m[1].split("|")}
+    if schema.template_topics is not None:
+        in_templates = set(schema.template_topics)
         missing = sorted(set(schema.taxonomy) - in_templates)
         if missing:
             add("drift", "Templates", f"Templates topic list lacks AGENTS.md topics: {', '.join(missing)}")
@@ -86,13 +70,13 @@ def lint(root: Path | None, today: date | None = None) -> dict:
         add("index", "Index", f"query not understood, coverage not checked for it: {q}", "todo")
     known = {t.lower() for t in pages}
     for title, text in pages.items():
-        if not title.startswith(RESEARCH):
+        if not is_paper_title(title):
             continue
-        props = _properties(text)
-        missing = [k for k in REQUIRED if k not in props]
+        props = parse_properties(text)
+        missing = [k for k in REQUIRED_PROPERTIES if k not in props]
         if missing:
             add("schema", title, f"missing required properties: {', '.join(missing)}")
-        for prop in ("source-type", "topic", "language", "status"):
+        for prop in schema.values:
             value = props.get(prop)
             if value is not None and value not in schema.values[prop]:
                 where = "taxonomy" if prop == "topic" else "allowed values"
@@ -105,7 +89,7 @@ def lint(root: Path | None, today: date | None = None) -> dict:
         for target in _related(text):
             if target.lower() not in known:
                 add("links", title, f"Related Pages links to a page that does not exist: {target}")
-        for hls in re.findall(r"\{\{embed \[\[(hls__[^\]]+)\]\]\}\}", text):
+        for hls in embedded_highlights(text):
             if "ls-type:: annotation" not in pages.get(hls, ""):
                 add("highlights", title, f"no highlights yet on {hls} (PDF not annotated)", "todo")
         if props.get("status") == "needs-update" and (d := _parse_date(props.get("date"))):
@@ -120,7 +104,7 @@ def lint(root: Path | None, today: date | None = None) -> dict:
                 f"topic '{props.get('topic')}'); check both properties",
             )
         pdf = props.get("pdf-path")
-        if pdf and pdf != "not-found" and not (schema.root / "pages" / pdf).resolve().exists():
+        if names_pdf(pdf) and not brain.has_pdf(pdf):
             add("pdf", title, f"pdf-path points to a missing file: {pdf}")
         if re.search(r"^[\s-]*[\w-]+:::", text, re.M):
             add("schema", title, "property uses ':::' (invalid Logseq syntax, use '::')")

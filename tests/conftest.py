@@ -1,6 +1,12 @@
-"""Shared fixture: build a throwaway Logseq brain on disk."""
+"""Shared fixtures: build a throwaway Logseq brain on disk."""
+
+from datetime import date
 
 import pytest
+
+from sci_paper_mcp import core
+from sci_paper_mcp.core import Lookup
+from sci_paper_mcp.sources import Paper
 
 AGENTS = """# AGENTS
 ```
@@ -15,8 +21,12 @@ TEMPLATES = """## Templates
 template:: Research Paper
 	- # <Title>
 		- ## Abstract
+		- ## Key Points
+		- ## Relevance to This Project
 		- ## Related Pages
+		- ## Verification
 		- ## Highlights
+		- ## Local PDF
 - ### Research Paper — page-property block
 \t- ```
 \t  topic:: rag-foundations | rag-retrieval
@@ -36,11 +46,88 @@ PAPER_PROPS = {
 }
 
 
+RAG_PAPER = dict(
+    title="Retrieval-Augmented Generation",
+    authors=["Patrick Lewis", "Ethan Perez"],
+    year=2020,
+    abstract="An abstract.",
+    venue="NeurIPS",
+    arxiv_id="2005.11401",
+    s2_id="p1",
+    citations=5000,
+)
+
+
+def fake_lookup(warnings=(), **fields):
+    """A stand-in for core.lookup that knows one paper: the RAG paper unless `fields` override it."""
+    found = Lookup(
+        Paper(**RAG_PAPER | fields), {"semantic_scholar": "found", "openalex": "found"}, list(warnings)
+    )
+    return lambda identifier: found
+
+
+def no_lookup(identifier):
+    raise AssertionError(f"looked up {identifier}, but bad input must cost no network call")
+
+
+def ingest_args(**kw):
+    """Keyword arguments for prepare_ingest: one valid paper, overridable."""
+    base = dict(
+        identifier="2005.11401",
+        paper_id="RAG-Lewis2020",
+        topic="rag-retrieval",
+        verdict="HIGH",
+        verdict_reasoning="NeurIPS",
+        key_points=["k"],
+        relevance="r",
+        related_pages=["Concepts/RAG"],
+        lookup=fake_lookup(),
+        today=date(2026, 1, 2),
+    )
+    return base | kw
+
+
 def paper_page(props=None, body=None, drop=()):
     merged = {k: v for k, v in (PAPER_PROPS | (props or {})).items() if k not in drop}
     head = "\n".join(f"{k}:: {v}" for k, v in merged.items())
     body = body if body is not None else "- # RAG\n\t- ## Related Pages\n\t\t- [[Concepts/RAG]]\n"
     return f"{head}\n\n{body}"
+
+
+def page_file(root, title):
+    return root / "pages" / f"{title.replace('/', '%2F')}.md"
+
+
+def apply_calls(root, calls):
+    """Apply prepare_ingest's `calls` to a tmp brain the way mcp-logseq would.
+
+    A stand-in for mcp-logseq, not verified against a live Logseq (ADR 0006). `create_page` writes
+    `key:: value` property lines, a blank line and the content to the encoded file; `update_page`
+    with mode "append" appends to it, creating the file if needed (e.g. `Log`).
+    """
+    for call in calls:
+        args = call["arguments"]
+        match call["tool"], args.get("mode"):
+            case "create_page", None:
+                path = page_file(root, args["title"])
+                assert not path.exists(), f"create_page on an existing page: {args['title']}"
+                props = "".join(f"{k}:: {v}\n" for k, v in args["properties"].items())
+                path.write_text(f"{props}\n{args['content']}\n")
+            case "update_page", "append":
+                path = page_file(root, args["page_name"])
+                old = path.read_text() if path.exists() else ""
+                path.write_text(
+                    old + ("" if old.endswith("\n") or not old else "\n") + args["content"] + "\n"
+                )
+            case _:
+                raise AssertionError(
+                    f"mcp-logseq stand-in does not support {call['tool']} {args.get('mode')}"
+                )
+
+
+@pytest.fixture(autouse=True)
+def fresh_lookup_memo():
+    core._memo.clear()
 
 
 @pytest.fixture
@@ -53,7 +140,7 @@ def make_brain(tmp_path):
         (tmp_path / "AGENTS.md").write_text(agents)
         (tmp_path / "pages" / "Templates.md").write_text(templates)
         for title, text in (pages or {}).items():
-            (tmp_path / "pages" / f"{title.replace('/', '%2F')}.md").write_text(text)
+            page_file(tmp_path, title).write_text(text)
         for name in assets:
             (tmp_path / "assets" / "papers" / name).write_bytes(b"%PDF-1")
         return tmp_path

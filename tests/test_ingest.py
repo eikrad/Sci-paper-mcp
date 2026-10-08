@@ -1,76 +1,23 @@
 import json
-from datetime import date
 
 import httpx
 import pytest
 import respx
+from conftest import fake_lookup, no_lookup
+from conftest import ingest_args as args
 
+from sci_paper_mcp.brain import SchemaError
+from sci_paper_mcp.core import Lookup
 from sci_paper_mcp.ingest import prepare_ingest
-from sci_paper_mcp.schema import SchemaError, load_schema
-
-AGENTS = """# AGENTS
-```
-source-type::   paper | book | concept
-topic::         rag-foundations | rag-retrieval
-language::      en | da | de
-status::        ingested | reviewed
-```
-"""
-TEMPLATES = """## Templates
-- ## Research Paper
-template:: Research Paper
-	- # <Title>
-		- ## Abstract
-			-
-		- ## Key Points
-			-
-		- ## Verification
-			-
-		- ## Highlights
-			-
-- ### Research Paper — page-property block
-"""
 
 
 @pytest.fixture
-def brain(tmp_path):
-    (tmp_path / "pages").mkdir()
-    (tmp_path / "AGENTS.md").write_text(AGENTS)
-    (tmp_path / "pages" / "Templates.md").write_text(TEMPLATES)
-    (tmp_path / "pages" / "Concepts%2FRAG.md").write_text("- x")
-    return tmp_path
+def brain(make_brain):
+    return make_brain(pages={"Concepts/RAG": "- x"})
 
 
-def args(**kw):
-    base = dict(
-        paper_id="RAG-Lewis2020",
-        title="RAG",
-        authors=["P. Lewis"],
-        topic="rag-retrieval",
-        verdict="HIGH",
-        verdict_reasoning="NeurIPS",
-        abstract="abs",
-        key_points=["k"],
-        relevance="r",
-        related_pages=["Concepts/RAG"],
-        arxiv_id="2005.11401",
-        pdf_path="../assets/papers/RAG-Lewis2020-2005.11401.pdf",
-        today=date(2026, 1, 2),
-    )
-    return base | kw
-
-
-def test_schema_parsed_from_graph(brain):
-    s = load_schema(brain)
-    assert s.taxonomy == ["rag-foundations", "rag-retrieval"]
-    assert s.sections == ["Abstract", "Key Points", "Verification", "Highlights"]
-
-
-def test_missing_agents_md_is_hard_error(tmp_path):
-    with pytest.raises(SchemaError, match="no schema"):
-        load_schema(tmp_path)
-    with pytest.raises(SchemaError, match="SECOND_BRAIN_PATH"):
-        load_schema(None)
+def create_args(result):
+    return result["calls"][0]["arguments"]
 
 
 def test_prepare_renders_calls_in_order(brain):
@@ -81,24 +28,144 @@ def test_prepare_renders_calls_in_order(brain):
         ("update_page", "Concepts/RAG"),
         ("update_page", "Log"),
     ]
-    create = r["calls"][0]["arguments"]
+    create = create_args(r)
     assert create["properties"]["trustworthiness"] == "HIGH"
     assert "## Abstract" in create["content"] and "hls__RAG-Lewis2020-2005.11401" in create["content"]
     assert "## [2026-01-02] ingest | Sources/Research/RAG-Lewis2020" in r["calls"][-1]["arguments"]["content"]
 
 
-@pytest.mark.parametrize(
-    "bad", [{"topic": "nope"}, {"verdict": "GREAT"}, {"language": "fr"}, {"arxiv_id": None}]
-)
-def test_invalid_input_rejected(brain, bad):
-    with pytest.raises(SchemaError):
-        prepare_ingest(brain, **args(**bad))
+def test_metadata_comes_from_the_lookup(brain):
+    paper = dict(
+        title="On Engines",
+        authors=["Ada Lovelace", "Charles Babbage"],
+        year=2024,
+        venue="ICML",
+        doi="10.1/X",
+        arxiv_id=None,
+        s2_id="abc",
+        citations=12,
+    )
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(**paper)))
+    create = create_args(r)
+    assert create["content"].startswith(
+        "# On Engines\n\n**Authors:** Ada Lovelace, Charles Babbage\n\n**Venue:** ICML (2024)"
+    )
+    for line in (
+        "**Citations:** 12",
+        "**Venue:** ICML",
+        "**Peer-reviewed:** Yes",
+        "**Semantic Scholar:** https://www.semanticscholar.org/paper/abc",
+    ):
+        assert f"- {line}" in create["content"]
+    assert create["properties"]["document-id"] == "doi:10.1/X"
+    assert create["properties"]["url"] == "https://doi.org/10.1/X"
+    assert "[[Sources/Research/RAG-Lewis2020]] — On Engines" in r["calls"][1]["arguments"]["content"]
 
 
-def test_existing_page_rejected(brain):
-    (brain / "pages" / "Sources%2FResearch%2FRAG-Lewis2020.md").write_text("- x")
+def test_a_preprint_has_unknown_citations_and_is_not_peer_reviewed(brain):
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(venue=None, citations=None, s2_id=None)))
+    for line in (
+        "**Citations:** unknown",
+        "**Venue:** none (preprint)",
+        "**Peer-reviewed:** No",
+        "**Semantic Scholar:** not found",
+    ):
+        assert f"- {line}" in create_args(r)["content"]
+
+
+def test_the_warnings_of_the_lookup_reach_the_result(brain):
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(warnings=["semantic_scholar: rate limited"])))
+    assert "semantic_scholar: rate limited" in r["warnings"] and r["calls"]
+
+
+def test_a_paper_no_source_knows_is_refused_naming_the_identifier(brain):
+    def unknown(identifier):
+        return Lookup(None, {"semantic_scholar": "not_found", "openalex": "not_found"}, [])
+
+    with pytest.raises(SchemaError, match="10.1/nope"):
+        prepare_ingest(brain, **args(identifier="10.1/nope", lookup=unknown))
+
+
+def test_every_source_failing_propagates_the_lookup_error(brain):
+    def down(identifier):
+        raise RuntimeError("semantic_scholar: rate limited; openalex: 500")
+
+    with pytest.raises(RuntimeError, match="semantic_scholar"):
+        prepare_ingest(brain, **args(lookup=down))
+
+
+def test_a_paper_with_neither_doi_nor_arxiv_id_is_refused(brain):
+    with pytest.raises(SchemaError, match="DOI or arXiv id"):
+        prepare_ingest(brain, **args(lookup=fake_lookup(arxiv_id=None, doi=None)))
+
+
+@pytest.mark.parametrize("bad", [{"topic": "nope"}, {"verdict": "GREAT"}, {"language": "fr"}])
+def test_invalid_input_is_rejected_before_any_lookup(brain, bad):
+    with pytest.raises(SchemaError, match=next(iter(bad))):
+        prepare_ingest(brain, **args(lookup=no_lookup, **bad))
+
+
+def test_existing_page_is_rejected_before_any_lookup(make_brain):
+    brain = make_brain(pages={"Sources/Research/RAG-Lewis2020": "- x"})
     with pytest.raises(SchemaError, match="already exists"):
-        prepare_ingest(brain, **args())
+        prepare_ingest(brain, **args(lookup=no_lookup))
+
+
+def test_existing_page_under_the_derived_paper_id_is_rejected(make_brain):
+    brain = make_brain(pages={"Sources/Research/Lewis2020": "- x"})
+    with pytest.raises(SchemaError, match="Lewis2020.*already exists"):
+        prepare_ingest(brain, **args(paper_id=None))
+
+
+def test_paper_id_is_derived_from_first_author_and_year_and_names_page_and_pdf(make_brain):
+    brain = make_brain(pages={"Concepts/RAG": "- x"}, assets=["Lewis2020-2005.11401.pdf"])
+    r = prepare_ingest(brain, **args(paper_id=None))
+    assert r["page"] == "Sources/Research/Lewis2020"
+    assert create_args(r)["properties"]["pdf-path"] == "../assets/papers/Lewis2020-2005.11401.pdf"
+
+
+def test_paper_id_without_author_or_year_must_be_given(brain):
+    with pytest.raises(RuntimeError, match="pass paper_id"):
+        prepare_ingest(brain, **args(paper_id=None, lookup=fake_lookup(authors=[])))
+
+
+def test_the_page_title_uses_the_same_file_safe_paper_id_as_the_pdf(brain):
+    assert (
+        prepare_ingest(brain, **args(paper_id="RAG Lewis/2020"))["page"] == "Sources/Research/RAG_Lewis_2020"
+    )
+
+
+@pytest.mark.parametrize(
+    "override,looked_up,shown",
+    [
+        pytest.param("mine", "theirs", "mine", id="override-wins"),
+        pytest.param(None, "theirs", "theirs", id="looked-up"),
+        pytest.param(None, None, "", id="neither"),
+    ],
+)
+def test_abstract_is_the_agents_override_else_the_looked_up_one(brain, override, looked_up, shown):
+    r = prepare_ingest(brain, **args(abstract=override, lookup=fake_lookup(abstract=looked_up)))
+    section = create_args(r)["content"].split("## Abstract\n")[1].split("\n\n## ")[0]
+    assert section == shown
+    assert any("no abstract" in w for w in r["warnings"]) == (shown == "")
+
+
+def test_a_pdf_in_the_raw_layer_is_linked_under_whichever_id_it_was_saved(make_brain):
+    brain = make_brain(pages={"Concepts/RAG": "- x"}, assets=["RAG-Lewis2020-10.1_x.pdf"])
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(doi="10.1/X")))
+    create = create_args(r)
+    pdf_path = "../assets/papers/RAG-Lewis2020-10.1_x.pdf"
+    assert create["properties"]["pdf-path"] == pdf_path
+    assert f"- [RAG-Lewis2020-10.1_x.pdf]({pdf_path})" in create["content"]
+    assert f"- **PDF:** Present — {pdf_path}" in create["content"]
+    assert "{{embed [[hls__RAG-Lewis2020-10.1_x]]}}" in create["content"]
+
+
+def test_without_a_pdf_the_page_says_so_and_embeds_the_highlights_of_the_pdf_to_come(brain):
+    create = create_args(prepare_ingest(brain, **args()))
+    assert create["properties"]["pdf-path"] == "not-found"
+    assert "- **PDF:** not found" in create["content"] and "## Local PDF\n- not found" in create["content"]
+    assert "{{embed [[hls__RAG-Lewis2020-2005.11401]]}}" in create["content"]
 
 
 def test_missing_related_page_warns_and_skips_backlink(brain):
@@ -135,7 +202,7 @@ def test_other_open_graph_refuses_to_prepare(brain, logseq_env, tmp_path_factory
     other = tmp_path_factory.mktemp("radiation-brain")
     open_graph(other)
     with pytest.raises(SchemaError, match="wrong graph") as e:
-        prepare_ingest(brain, **args())
+        prepare_ingest(brain, **args(lookup=no_lookup))
     assert str(brain) in str(e.value) and str(other) in str(e.value)
 
 

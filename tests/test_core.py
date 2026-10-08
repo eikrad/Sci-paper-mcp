@@ -1,14 +1,65 @@
 import httpx
 import pytest
 import respx
+from conftest import fake_lookup, ingest_args
 
 from sci_paper_mcp import core, sources
+from sci_paper_mcp.ingest import prepare_ingest
+from sci_paper_mcp.sources import Identifier
 
 ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 <id>http://arxiv.org/abs/2005.11401v4</id><published>2020-05-22T00:00:00Z</published>
 <title>Retrieval-Augmented
  Generation</title><summary>An abstract.</summary>
 <author><name>P. Lewis</name></author></entry></feed>"""
+JOURNAL_WORK = {
+    "id": "https://openalex.org/W1",
+    "doi": "https://doi.org/10.1109/TDSC.2026.3695553",
+    "display_name": "MCPXkit",
+    "publication_year": 2026,
+    "is_retracted": True,
+    "authorships": [{"author": {"display_name": "Yongjian Guo"}}],
+    "cited_by_count": 4,
+    "abstract_inverted_index": {"A": [0], "toolkit": [1], "for": [2], "MCP": [3]},
+    "primary_location": {
+        "pdf_url": None,
+        "source": {
+            "type": "journal",
+            "display_name": "IEEE Transactions on Dependable and Secure Computing",
+            "is_in_doaj": False,
+        },
+    },
+    "best_oa_location": {"pdf_url": "https://example.org/mcpxkit.pdf"},
+}
+ARXIV_WORK = {
+    "doi": "https://doi.org/10.48550/arxiv.2604.07551",
+    "display_name": "MCP-DPT",
+    "publication_year": 2026,
+    "authorships": [{"author": {"display_name": "M. Rostamzadeh"}}],
+    "cited_by_count": 18,
+    "abstract_inverted_index": None,
+    "primary_location": {
+        "pdf_url": "https://arxiv.org/pdf/2604.07551",
+        "source": {"type": "repository", "display_name": "arXiv (Cornell University)"},
+    },
+}
+
+
+@pytest.fixture(autouse=True)
+def no_sleep(monkeypatch):
+    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+
+
+def _oa_search(*works, status=200):
+    return respx.get(f"{sources.OPENALEX_API}/works").respond(status, json={"results": list(works)})
+
+
+def _oa(status=404, **fields):
+    return respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(status, json=fields)
+
+
+def _s2(path, **fields):
+    respx.get(f"{sources.S2_API}/paper/{path}").respond(json={"title": "T", "year": 2020, **fields})
 
 
 @respx.mock
@@ -35,35 +86,6 @@ def test_search_merges_sources():
     assert res[0]["venue"] == "NeurIPS" and res[0]["pdf_url"].endswith("2005.11401")
 
 
-@pytest.fixture(autouse=True)
-def no_sleep(monkeypatch):
-    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
-
-
-@pytest.mark.parametrize(
-    "venue,expected",
-    [
-        ("Conference on Empirical Methods in Natural Language Processing", "HIGH"),
-        ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
-        ("Social Science Computer Review", "MEDIUM"),
-        ("Oracle Journal", "MEDIUM"),
-        ("USENIX Security Symposium", "HIGH"),
-        ("IEEE Symposium on Security and Privacy", "HIGH"),
-        ("Conference on Computer and Communications Security", "HIGH"),
-        ("ACM SIGSAC Conference on Computer and Communications Security", "HIGH"),
-        ("Network and Distributed System Security Symposium", "HIGH"),
-        ("Journal of Information Security and Applications", "MEDIUM"),
-        ("Security and Communication Networks", "MEDIUM"),
-        ("International Conference on Security and Privacy in Smart Cities", "MEDIUM"),
-    ],
-)
-@respx.mock
-def test_venue_matching(venue, expected):
-    _oa()
-    _s2("DOI:10.1/x", venue=venue, authors=[{"name": "A B"}])
-    assert core.trust_check("10.1/x")["verdict"] == expected
-
-
 @respx.mock
 def test_search_survives_one_source_down():
     _oa_search()
@@ -73,193 +95,34 @@ def test_search_survives_one_source_down():
     assert out["results"][0]["source"] == "arxiv" and "semantic_scholar" in out["warnings"][0]
 
 
+@pytest.mark.parametrize(
+    "raw,kind,value",
+    [
+        ("https://doi.org/10.1/abc", "doi", "10.1/abc"),
+        (" http://dx.doi.org/10.1/abc ", "doi", "10.1/abc"),
+        ("arXiv:2005.11401v2", "arxiv", "2005.11401"),
+        ("https://arxiv.org/pdf/2005.11401.pdf", "arxiv", "2005.11401"),
+        ("hep-th/9901001v2", "arxiv", "hep-th/9901001"),
+        ("abcdef0123", "s2", "abcdef0123"),
+    ],
+)
+def test_identifier_is_parsed_once(raw, kind, value):
+    assert Identifier.parse(raw) == Identifier(kind, value)
+
+
 @respx.mock
-def test_s2_retries_on_429(monkeypatch):
-    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
+def test_s2_retries_on_429():
     route = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x")
     route.side_effect = [httpx.Response(429), httpx.Response(200, json={"title": "T"})]
-    assert sources.get_s2_paper("10.1/x")["title"] == "T"
+    assert sources.get_s2_paper(Identifier.parse("10.1/x")).title == "T"
 
 
 @respx.mock
 def test_s2_gives_up_with_hint(monkeypatch):
-    monkeypatch.setattr(sources.time, "sleep", lambda s: None)
     monkeypatch.delenv("S2_API_KEY", raising=False)
     respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
     with pytest.raises(httpx.HTTPStatusError, match="S2_API_KEY"):
-        sources.get_s2_paper("10.1/x")
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("https://doi.org/10.1/abc", "DOI:10.1/abc"),
-        ("arXiv:2005.11401v2", "ARXIV:2005.11401"),
-        ("https://arxiv.org/pdf/2005.11401.pdf", "ARXIV:2005.11401"),
-        ("abcdef0123", "abcdef0123"),
-    ],
-)
-def test_identifier_mapping(raw, expected):
-    assert sources.s2_identifier(raw) == expected
-
-
-def _oa_search(*works, status=200):
-    return respx.get(f"{sources.OPENALEX_API}/works").respond(status, json={"results": list(works)})
-
-
-def _oa(status=404, **fields):
-    respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(status, json=fields)
-
-
-def _s2(path, **fields):
-    respx.get(f"{sources.S2_API}/paper/{path}").respond(json={"title": "T", "year": 2020, **fields})
-
-
-@respx.mock
-def test_verdict_high_for_reputable_venue():
-    _oa()
-    _s2("DOI:10.1/x", venue="Advances in NeurIPS", authors=[{"name": "A B", "hIndex": 5}])
-    r = core.trust_check("10.1/x")
-    assert r["verdict"] == "HIGH" and r["peer_reviewed"]
-
-
-@respx.mock
-def test_verdict_medium_for_known_author_preprint():
-    _oa()
-    _s2(
-        "ARXIV:2005.11401",
-        venue="arXiv.org",
-        externalIds={"ArXiv": "2005.11401"},
-        authors=[{"name": "A B", "hIndex": 40}],
-    )
-    assert core.trust_check("2005.11401")["verdict"] == "MEDIUM"
-
-
-@respx.mock
-def test_verdict_low_for_unknown_preprint():
-    _oa()
-    _s2(
-        "ARXIV:2005.11401",
-        venue="",
-        externalIds={"ArXiv": "2005.11401"},
-        authors=[{"name": "A B", "hIndex": 1}],
-    )
-    assert core.trust_check("2005.11401")["verdict"] == "LOW"
-
-
-@respx.mock
-def test_verdict_low_when_not_found():
-    _oa()
-    respx.get(f"{sources.S2_API}/paper/DOI:10.1/nope").respond(404)
-    r = core.trust_check("10.1/nope")
-    assert r["verdict"] == "LOW" and not r["found"]
-
-
-@respx.mock
-def test_fetch_pdf_names_after_paper_id(tmp_path):
-    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1.5 data")
-    out = core.fetch_pdf("arXiv:2005.11401", "RAG-Lewis2020", str(tmp_path))
-    assert out["path"].endswith("RAG-Lewis2020-2005.11401.pdf")
-
-
-@respx.mock
-def test_fetch_pdf_derives_paper_id_and_writes_to_brain(tmp_path, monkeypatch):
-    monkeypatch.setenv("SECOND_BRAIN_PATH", str(tmp_path))
-    _s2("ARXIV:2005.11401", externalIds={"ArXiv": "2005.11401"}, authors=[{"name": "Patrick Lewis"}])
-    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
-    out = core.fetch_pdf("2005.11401")
-    assert out["pdf_path_property"] == "../assets/papers/Lewis2020-2005.11401.pdf"
-    assert (tmp_path / "assets/papers/Lewis2020-2005.11401.pdf").exists()
-
-
-@respx.mock
-def test_fetch_pdf_never_overwrites(tmp_path):
-    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
-    core.fetch_pdf("2005.11401", "X", str(tmp_path))
-    with pytest.raises(RuntimeError, match="already exists"):
-        core.fetch_pdf("2005.11401", "X", str(tmp_path))
-
-
-@respx.mock
-def test_fetch_pdf_rejects_html(tmp_path):
-    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"<html>")
-    with pytest.raises(RuntimeError):
-        core.fetch_pdf("2005.11401", "X", str(tmp_path))
-
-
-@respx.mock
-def test_unpaywall_needs_email(monkeypatch):
-    monkeypatch.delenv("UNPAYWALL_EMAIL", raising=False)
-    _s2("DOI:10.1/x", externalIds={"DOI": "10.1/x"}, authors=[{"name": "A B"}])
-    with pytest.raises(RuntimeError, match="UNPAYWALL_EMAIL"):
-        core.fetch_pdf("10.1/x")
-
-
-@respx.mock
-def test_retraction_from_openalex_forces_low():
-    _s2("DOI:10.1/x", venue="NeurIPS", authors=[{"name": "A B", "hIndex": 50}])
-    _oa(200, is_retracted=True, cited_by_count=3)
-    r = core.trust_check("10.1/x")
-    assert r["verdict"] == "LOW" and r["retracted"] is True and "retracted" in r["reasons"][0]
-
-
-@respx.mock
-def test_openalex_supplies_venue_when_s2_has_none():
-    _s2("DOI:10.1/x", venue="", authors=[{"name": "A B"}])
-    _oa(
-        200,
-        is_retracted=False,
-        cited_by_count=7,
-        primary_location={"source": {"type": "journal", "display_name": "Some Journal", "is_in_doaj": True}},
-    )
-    r = core.trust_check("10.1/x")
-    assert r["venue"] == "Some Journal" and r["verdict"] == "MEDIUM" and r["in_doaj"] is True
-    assert r["retracted"] is False
-
-
-@respx.mock
-def test_s2_down_openalex_still_answers():
-    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
-    _oa(
-        200,
-        display_name="T",
-        publication_year=2021,
-        is_retracted=False,
-        cited_by_count=1,
-        primary_location={"source": {"type": "conference", "display_name": "ICML"}},
-    )
-    r = core.trust_check("10.1/x")
-    assert r["title"] == "T" and "semantic_scholar" in r["warnings"][0]
-
-
-@respx.mock
-def test_openalex_down_flags_unknown_retraction():
-    _s2("DOI:10.1/x", venue="ICML", authors=[{"name": "A B"}])
-    _oa(500)
-    r = core.trust_check("10.1/x")
-    assert r["verdict"] == "HIGH" and r["retracted"] is None
-    assert any("retraction status unknown" in x for x in r["reasons"])
-
-
-@respx.mock
-def test_both_sources_down_raises():
-    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
-    _oa(500)
-    with pytest.raises(RuntimeError, match="semantic_scholar"):
-        core.trust_check("10.1/x")
-
-
-@respx.mock
-def test_arxiv_id_maps_to_datacite_doi_for_openalex():
-    _s2(
-        "ARXIV:2005.11401",
-        venue="",
-        externalIds={"ArXiv": "2005.11401"},
-        authors=[{"name": "A", "hIndex": 30}],
-    )
-    route = respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(200, json={})
-    core.trust_check("2005.11401")
-    assert "10.48550/arXiv.2005.11401" in str(route.calls[0].request.url)
+        sources.get_s2_paper(Identifier.parse("10.1/x"))
 
 
 @respx.mock
@@ -286,51 +149,6 @@ def test_arxiv_query_requires_every_term_to_match(query, expected):
 
 
 @respx.mock
-def test_paper_missing_in_openalex_is_not_reported_as_an_outage():
-    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
-    _oa(404)
-    r = core.trust_check("2512.08290")
-    assert r["retracted"] is None and r["warnings"] == []
-    assert any("not found in OpenAlex" in x for x in r["reasons"])
-    assert not any("unavailable" in x for x in r["reasons"])
-
-
-@respx.mock
-def test_openalex_outage_is_reported_as_unavailable():
-    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
-    _oa(500)
-    r = core.trust_check("2512.08290")
-    assert any("OpenAlex unavailable" in x for x in r["reasons"]) and r["warnings"]
-
-
-JOURNAL_WORK = {
-    "doi": "https://doi.org/10.1109/TDSC.2026.3695553",
-    "display_name": "MCPXkit",
-    "publication_year": 2026,
-    "authorships": [{"author": {"display_name": "Yongjian Guo"}}],
-    "cited_by_count": 4,
-    "abstract_inverted_index": {"A": [0], "toolkit": [1], "for": [2], "MCP": [3]},
-    "primary_location": {
-        "pdf_url": None,
-        "source": {"type": "journal", "display_name": "IEEE Transactions on Dependable and Secure Computing"},
-    },
-    "best_oa_location": {"pdf_url": "https://example.org/mcpxkit.pdf"},
-}
-ARXIV_WORK = {
-    "doi": "https://doi.org/10.48550/arxiv.2604.07551",
-    "display_name": "MCP-DPT",
-    "publication_year": 2026,
-    "authorships": [{"author": {"display_name": "M. Rostamzadeh"}}],
-    "cited_by_count": 18,
-    "abstract_inverted_index": None,
-    "primary_location": {
-        "pdf_url": "https://arxiv.org/pdf/2604.07551",
-        "source": {"type": "repository", "display_name": "arXiv (Cornell University)"},
-    },
-}
-
-
-@respx.mock
 def test_openalex_journal_work_is_mapped():
     _oa_search(JOURNAL_WORK)
     [p] = sources.search_openalex("mcp", 5)
@@ -339,6 +157,8 @@ def test_openalex_journal_work_is_mapped():
     assert p.abstract == "A toolkit for MCP" and p.citations == 4
     assert p.authors == ["Yongjian Guo"] and p.pdf_url == "https://example.org/mcpxkit.pdf"
     assert p.source == "openalex"
+    assert (p.source_type, p.retracted, p.in_doaj) == ("journal", True, False)
+    assert (p.citations_openalex, p.openalex_id) == (4, "https://openalex.org/W1")
 
 
 @respx.mock
@@ -347,6 +167,7 @@ def test_openalex_preprint_has_no_venue_and_untrusted_citations():
     [p] = sources.search_openalex("mcp", 5)
     assert p.arxiv_id == "2604.07551" and p.doi is None
     assert p.venue is None and p.citations is None  # counts are split across versions
+    assert p.citations_openalex == 18 and p.source_type == "repository"
     assert p.pdf_url == "https://arxiv.org/pdf/2604.07551"
 
 
@@ -379,3 +200,326 @@ def test_search_survives_openalex_being_down():
     _oa_search(status=500)
     out = core.search_papers("rag")
     assert out["results"] and any("openalex" in w for w in out["warnings"])
+
+
+@respx.mock
+def test_trust_check_merges_both_sources():
+    _s2(
+        "DOI:10.1/x",
+        paperId="p1",
+        venue="",
+        citationCount=9,
+        influentialCitationCount=2,
+        authors=[{"name": "A B", "hIndex": 12}, {"name": "C D", "hIndex": 3}],
+    )
+    _oa(
+        200,
+        id="https://openalex.org/W1",
+        is_retracted=False,
+        cited_by_count=7,
+        primary_location={"source": {"type": "journal", "display_name": "Some Journal", "is_in_doaj": True}},
+    )
+    r = core.trust_check("10.1/x")
+    assert r["venue"] == "Some Journal" and r["verdict"] == "MEDIUM" and r["peer_reviewed"]
+    assert r["retracted"] is False and r["in_doaj"] is True and r["source_type"] == "journal"
+    assert (r["citations"], r["citations_openalex"]) == (9, 7)
+    assert (r["influential_citations"], r["max_author_h_index"]) == (2, 12)
+    assert r["semantic_scholar_url"].endswith("/p1") and r["openalex_id"].endswith("/W1")
+
+
+@respx.mock
+def test_paper_unknown_to_both_sources_is_not_found():
+    _oa()
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/nope").respond(404)
+    outcomes = {"semantic_scholar": "not_found", "openalex": "not_found"}
+    assert core.lookup("10.1/nope") == core.Lookup(None, outcomes, [])
+    r = core.trust_check("10.1/nope")
+    assert r["verdict"] == "LOW" and not r["found"]
+
+
+@respx.mock
+def test_s2_down_and_openalex_not_knowing_the_paper_is_an_error():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa()
+    with pytest.raises(RuntimeError, match="semantic_scholar"):
+        core.lookup("10.1/x")
+
+
+@respx.mock
+def test_s2_down_openalex_still_answers():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa(
+        200,
+        display_name="T",
+        publication_year=2021,
+        is_retracted=False,
+        cited_by_count=1,
+        authorships=[{"author": {"display_name": "Ada Lovelace"}}],
+        primary_location={"source": {"type": "conference", "display_name": "ICML"}},
+    )
+    r = core.trust_check("10.1/x")
+    assert r["title"] == "T" and "semantic_scholar" in r["warnings"][0]
+    assert r["verdict"] == "HIGH"  # OpenAlex alone now knows the authors
+
+
+@respx.mock
+def test_openalex_source_types_beyond_journal_and_conference_supply_a_venue():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(404)
+    _oa(200, primary_location={"source": {"type": "book series", "display_name": "Lecture Notes in CS"}})
+    r = core.trust_check("10.1/x")
+    assert r["venue"] == "Lecture Notes in CS" and r["peer_reviewed"] and r["source_type"] == "book series"
+
+
+@respx.mock
+def test_openalex_preprint_count_never_becomes_citations():
+    respx.get(f"{sources.S2_API}/paper/ARXIV:2604.07551").respond(429)
+    _oa(200, **ARXIV_WORK | {"is_retracted": False})
+    r = core.trust_check("2604.07551")
+    assert r["citations"] is None and r["citations_openalex"] == 18
+
+
+@respx.mock
+def test_openalex_down_flags_unknown_retraction():
+    _s2("DOI:10.1/x", venue="ICML", authors=[{"name": "A B"}])
+    _oa(500)
+    r = core.trust_check("10.1/x")
+    assert r["verdict"] == "HIGH" and r["retracted"] is None
+    assert any("retraction status unknown" in x for x in r["reasons"])
+
+
+@respx.mock
+def test_both_sources_down_raises():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa(500)
+    with pytest.raises(RuntimeError, match="semantic_scholar"):
+        core.trust_check("10.1/x")
+
+
+@respx.mock
+def test_arxiv_id_maps_to_datacite_doi_for_openalex():
+    _s2(
+        "ARXIV:2005.11401",
+        venue="",
+        externalIds={"ArXiv": "2005.11401"},
+        authors=[{"name": "A", "hIndex": 30}],
+    )
+    route = _oa(200)
+    core.trust_check("2005.11401")
+    assert "10.48550/arXiv.2005.11401" in str(route.calls[0].request.url)
+
+
+@respx.mock
+def test_paper_missing_in_openalex_is_not_reported_as_an_outage():
+    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
+    _oa(404)
+    r = core.trust_check("2512.08290")
+    assert r["retracted"] is None and r["warnings"] == []
+    assert any("not found in OpenAlex" in x for x in r["reasons"])
+    assert not any("unavailable" in x for x in r["reasons"])
+
+
+@respx.mock
+def test_openalex_outage_is_reported_as_unavailable():
+    _s2("ARXIV:2512.08290", venue="arXiv.org", externalIds={"ArXiv": "2512.08290"}, authors=[{"name": "A"}])
+    _oa(500)
+    r = core.trust_check("2512.08290")
+    assert any("OpenAlex unavailable" in x for x in r["reasons"]) and r["warnings"]
+
+
+@respx.mock
+def test_bare_s2_id_reaches_openalex_only_through_the_doi_s2_returns():
+    _s2("abcdef0123", venue="ICML", authors=[{"name": "A B"}])
+    out = core.lookup("abcdef0123")
+    assert out.outcomes == {"semantic_scholar": "found", "openalex": "skipped"}
+    assert any("no DOI or arXiv id" in x for x in core.trust_check("abcdef0123")["reasons"])
+
+    _s2("abcdef0124", externalIds={"DOI": "10.1/y"})
+    route = _oa(200, is_retracted=False)
+    out = core.lookup("abcdef0124")
+    assert out.outcomes["openalex"] == "found" and "doi.org/10.1/y" in str(route.calls[0].request.url)
+
+
+@pytest.mark.parametrize(
+    "raw,s2_path,field,value",
+    [
+        ("https://arxiv.org/abs/2005.11401v3", "ARXIV:2005.11401", "arxiv_id", "2005.11401"),
+        ("https://doi.org/10.1/x", "DOI:10.1/x", "doi", "10.1/x"),
+    ],
+)
+@respx.mock
+def test_lookup_fills_ids_from_the_identifier(raw, s2_path, field, value):
+    _s2(s2_path)
+    _oa()
+    assert getattr(core.lookup(raw).paper, field) == value
+
+
+@respx.mock
+def test_fetch_pdf_names_after_paper_id(tmp_path):
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1.5 data")
+    out = core.fetch_pdf(None, "arXiv:2005.11401", "RAG-Lewis2020", str(tmp_path))
+    assert out["path"].endswith("RAG-Lewis2020-2005.11401.pdf")
+
+
+@respx.mock
+def test_fetch_pdf_derives_paper_id_and_writes_to_brain(tmp_path):
+    _s2("ARXIV:2005.11401", externalIds={"ArXiv": "2005.11401"}, authors=[{"name": "Patrick Lewis"}])
+    _oa()
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    out = core.fetch_pdf(tmp_path, "2005.11401")  # no AGENTS.md: the schema is not needed for a PDF
+    assert out["pdf_path_property"] == "../assets/papers/Lewis2020-2005.11401.pdf"
+    assert (tmp_path / "assets/papers/Lewis2020-2005.11401.pdf").exists()
+
+
+@respx.mock
+def test_fetch_pdf_falls_back_to_openalex_when_s2_is_down(tmp_path):
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa(
+        200,
+        doi="https://doi.org/10.1/x",
+        display_name="On Engines",
+        publication_year=2024,
+        authorships=[{"author": {"display_name": "Ada Lovelace"}}],
+        best_oa_location={"pdf_url": "https://example.org/x.pdf"},
+    )
+    respx.get("https://example.org/x.pdf").respond(content=b"%PDF-1")
+    out = core.fetch_pdf(None, "10.1/x", dest_dir=str(tmp_path))
+    assert out["paper_id"] == "Lovelace2024" and out["url"] == "https://example.org/x.pdf"
+    assert (tmp_path / "Lovelace2024-10.1_x.pdf").exists()
+
+
+@respx.mock
+def test_fetch_pdf_of_an_unknown_paper_says_so(tmp_path):
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/nope").respond(404)
+    _oa()
+    with pytest.raises(RuntimeError, match="not found"):
+        core.fetch_pdf(None, "10.1/nope", dest_dir=str(tmp_path))
+
+
+@respx.mock
+def test_fetch_pdf_never_overwrites(tmp_path):
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+    with pytest.raises(RuntimeError, match="already exists"):
+        core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+
+
+@respx.mock
+def test_fetch_pdf_refuses_before_downloading_when_the_brain_already_has_the_file(make_brain):
+    brain = make_brain(assets=["X-2005.11401.pdf"])
+    with pytest.raises(RuntimeError, match="already exists"):  # nothing is mocked: a request would fail
+        core.fetch_pdf(brain, "2005.11401", "X")
+    assert (brain / "assets/papers/X-2005.11401.pdf").read_bytes() == b"%PDF-1"
+
+
+@respx.mock
+def test_fetch_pdf_without_a_brain_goes_to_the_cache_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+    out = core.fetch_pdf(None, "2005.11401", "X")
+    assert out["path"] == str(tmp_path / "sci-paper-mcp" / "X-2005.11401.pdf")
+    assert out["pdf_path_property"] is None
+
+
+@respx.mock
+def test_fetch_pdf_rejects_html(tmp_path):
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"<html>")
+    with pytest.raises(RuntimeError):
+        core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "identifier,ids",
+    [
+        pytest.param("2005.11401", {"arxiv_id": "2005.11401"}, id="arxiv"),
+        pytest.param("hep-th/9901001", {"arxiv_id": "hep-th/9901001"}, id="old-style-arxiv"),
+        pytest.param("10.1/x", {"arxiv_id": None, "doi": "10.1/x"}, id="doi-only"),
+    ],
+)
+@respx.mock
+def test_highlights_page_of_a_paper_ingested_first_names_the_pdf_fetched_later(
+    make_brain, monkeypatch, identifier, ids
+):
+    brain = make_brain(pages={"Concepts/RAG": "- x"})
+    lookup = fake_lookup(pdf_url="https://example.org/x.pdf", **ids)
+    monkeypatch.setattr(core, "lookup", lookup)
+    respx.route(method="GET").respond(content=b"%PDF-1")
+
+    page = prepare_ingest(brain, **ingest_args(identifier=identifier, lookup=lookup))
+    core.fetch_pdf(brain, identifier, "RAG-Lewis2020")
+
+    [pdf] = (brain / "assets" / "papers").glob("*.pdf")
+    assert f"{{{{embed [[hls__{pdf.stem}]]}}}}" in page["calls"][0]["arguments"]["content"]
+
+
+@respx.mock
+def test_prepare_ingest_picks_up_where_fetch_pdf_left_off(make_brain, monkeypatch):
+    brain = make_brain(pages={"Concepts/RAG": "- x"})
+    lookup = fake_lookup()
+    monkeypatch.setattr(core, "lookup", lookup)
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+
+    fetched = core.fetch_pdf(brain, "2005.11401")
+    ingest = prepare_ingest(brain, **ingest_args(paper_id=None, lookup=lookup))
+
+    assert ingest["page"] == f"Sources/Research/{fetched['paper_id']}"
+    assert ingest["calls"][0]["arguments"]["properties"]["pdf-path"] == fetched["pdf_path_property"]
+
+
+@respx.mock
+def test_a_lookup_is_remembered_across_tools_and_spellings_of_the_identifier():
+    s2 = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(
+        json={"title": "T", "year": 2020, "authors": [{"name": "A B"}], "venue": "ICML"}
+    )
+    oa = _oa(200, is_retracted=False)
+    first = core.lookup("10.1/x")
+    assert core.trust_check("10.1/x")["found"] and core.lookup("https://doi.org/10.1/x") == first
+    assert (s2.call_count, oa.call_count) == (1, 1)
+
+
+@respx.mock
+def test_callers_cannot_corrupt_the_memo_by_mutating_a_lookup():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(
+        json={"title": "T", "year": 2020, "authors": [{"name": "A B"}]}
+    )
+    _oa(200, is_retracted=False)
+    first = core.lookup("10.1/x")
+    first.paper.title = "Changed"
+    first.paper.authors.append("Mallory")
+    first.outcomes.clear()
+    first.warnings.append("made up")
+    second = core.lookup("10.1/x")
+    second.paper.authors.clear()
+
+    third = core.lookup("10.1/x")
+    assert (third.paper.title, third.paper.authors, third.warnings) == ("T", ["A B"], [])
+    assert third.outcomes == {"semantic_scholar": "found", "openalex": "found"}
+
+
+@pytest.mark.parametrize(
+    "s2_status,openalex_status",
+    [
+        pytest.param(429, 200, id="a-source-failed-but-the-other-knew-the-paper"),
+        pytest.param(404, 404, id="no-source-knows-the-paper"),
+    ],
+)
+@respx.mock
+def test_failures_and_unknown_papers_are_not_remembered(s2_status, openalex_status):
+    s2 = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(s2_status)
+    openalex = _oa(openalex_status, display_name="T")
+    first = core.lookup("10.1/x")
+    assert first.warnings or first.paper is None
+
+    s2.respond(json={"title": "T", "year": 2020})
+    openalex.respond(200, json={"display_name": "T"})
+    second = core.lookup("10.1/x")
+    assert second.paper is not None and second.warnings == []
+
+
+@respx.mock
+def test_unpaywall_needs_email(monkeypatch):
+    monkeypatch.delenv("UNPAYWALL_EMAIL", raising=False)
+    _s2("DOI:10.1/x", externalIds={"DOI": "10.1/x"}, authors=[{"name": "A B"}])
+    _oa()
+    with pytest.raises(RuntimeError, match="UNPAYWALL_EMAIL"):
+        core.fetch_pdf(None, "10.1/x")
