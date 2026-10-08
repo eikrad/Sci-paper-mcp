@@ -13,10 +13,7 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 S2_API = "https://api.semanticscholar.org/graph/v1"
 OPENALEX_API = "https://api.openalex.org"
 ATOM = {"a": "http://www.w3.org/2005/Atom"}
-S2_FIELDS = (
-    "title,abstract,year,authors,venue,externalIds,citationCount,"
-    "openAccessPdf,publicationTypes"
-)
+S2_FIELDS = "title,abstract,year,authors,venue,externalIds,citationCount,openAccessPdf,publicationTypes"
 _ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?$|[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
 
 
@@ -53,7 +50,9 @@ def _openalex_headers() -> dict:
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 
-def _get(c: httpx.Client, url: str, params: dict, headers: dict, key_hint: str, tries: int = 4) -> httpx.Response:
+def _get(
+    c: httpx.Client, url: str, params: dict, headers: dict, key_hint: str, tries: int = 4
+) -> httpx.Response:
     """GET with backoff on 429; both scholarly APIs throttle anonymous clients."""
     for attempt in range(tries):
         r = c.get(url, params=params, headers=headers)
@@ -113,7 +112,13 @@ def _from_s2(d: dict) -> Paper:
 
 def search_semantic_scholar(query: str, limit: int) -> list[Paper]:
     with _client() as c:
-        r = _get(c, f"{S2_API}/paper/search", {"query": query, "limit": limit, "fields": S2_FIELDS}, _s2_headers(), "S2_API_KEY")
+        r = _get(
+            c,
+            f"{S2_API}/paper/search",
+            {"query": query, "limit": limit, "fields": S2_FIELDS},
+            _s2_headers(),
+            "S2_API_KEY",
+        )
     return [_from_s2(d) for d in r.json().get("data", [])]
 
 
@@ -134,13 +139,14 @@ def s2_identifier(identifier: str) -> str:
 def get_s2_paper(identifier: str, extra_fields: str = "") -> dict:
     fields = S2_FIELDS + (f",{extra_fields}" if extra_fields else "")
     with _client() as c:
-        r = _get(c, f"{S2_API}/paper/{s2_identifier(identifier)}", {"fields": fields}, _s2_headers(), "S2_API_KEY")
+        r = _get(
+            c, f"{S2_API}/paper/{s2_identifier(identifier)}", {"fields": fields}, _s2_headers(), "S2_API_KEY"
+        )
     return r.json()
 
 
 OPENALEX_FIELDS = (
-    "id,doi,display_name,publication_year,is_retracted,cited_by_count,"
-    "primary_location,open_access"
+    "id,doi,display_name,publication_year,is_retracted,cited_by_count,primary_location,open_access"
 )
 
 
@@ -158,6 +164,11 @@ def openalex_work_id(identifier: str, s2_doi: str | None = None) -> str | None:
 
 def get_openalex_work(work_id: str) -> dict:
     with _client() as c:
-        r = _get(c, f"{OPENALEX_API}/works/{work_id}", {"select": OPENALEX_FIELDS},
-                 _openalex_headers(), "OPENALEX_API_KEY")
+        r = _get(
+            c,
+            f"{OPENALEX_API}/works/{work_id}",
+            {"select": OPENALEX_FIELDS},
+            _openalex_headers(),
+            "OPENALEX_API_KEY",
+        )
     return r.json()

@@ -23,4 +23,16 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
     "respx>=0.23.1",
+    "ruff>=0.16.10",
 ]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = ["live: hits real APIs; excluded from CI, run with `pytest -m live`"]

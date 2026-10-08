@@ -15,9 +15,19 @@ ATOM = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
 def test_search_merges_sources():
     respx.get(sources.ARXIV_API).respond(text=ATOM)
     respx.get(f"{sources.S2_API}/paper/search").respond(
-        json={"data": [{"paperId": "x", "title": "Retrieval-Augmented Generation",
-                        "year": 2020, "authors": [{"name": "P. Lewis"}], "venue": "NeurIPS",
-                        "externalIds": {"ArXiv": "2005.11401"}, "citationCount": 5000}]}
+        json={
+            "data": [
+                {
+                    "paperId": "x",
+                    "title": "Retrieval-Augmented Generation",
+                    "year": 2020,
+                    "authors": [{"name": "P. Lewis"}],
+                    "venue": "NeurIPS",
+                    "externalIds": {"ArXiv": "2005.11401"},
+                    "citationCount": 5000,
+                }
+            ]
+        }
     )
     res = core.search_papers("rag")["results"]
     assert len(res) == 1
@@ -29,12 +39,15 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(sources.time, "sleep", lambda s: None)
 
 
-@pytest.mark.parametrize("venue,expected", [
-    ("Conference on Empirical Methods in Natural Language Processing", "HIGH"),
-    ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
-    ("Social Science Computer Review", "MEDIUM"),
-    ("Oracle Journal", "MEDIUM"),
-])
+@pytest.mark.parametrize(
+    "venue,expected",
+    [
+        ("Conference on Empirical Methods in Natural Language Processing", "HIGH"),
+        ("Annual Meeting of the Association for Computational Linguistics", "HIGH"),
+        ("Social Science Computer Review", "MEDIUM"),
+        ("Oracle Journal", "MEDIUM"),
+    ],
+)
 @respx.mock
 def test_venue_matching(venue, expected):
     _oa()
@@ -67,12 +80,15 @@ def test_s2_gives_up_with_hint(monkeypatch):
         sources.get_s2_paper("10.1/x")
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("https://doi.org/10.1/abc", "DOI:10.1/abc"),
-    ("arXiv:2005.11401v2", "ARXIV:2005.11401"),
-    ("https://arxiv.org/pdf/2005.11401.pdf", "ARXIV:2005.11401"),
-    ("abcdef0123", "abcdef0123"),
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://doi.org/10.1/abc", "DOI:10.1/abc"),
+        ("arXiv:2005.11401v2", "ARXIV:2005.11401"),
+        ("https://arxiv.org/pdf/2005.11401.pdf", "ARXIV:2005.11401"),
+        ("abcdef0123", "abcdef0123"),
+    ],
+)
 def test_identifier_mapping(raw, expected):
     assert sources.s2_identifier(raw) == expected
 
@@ -96,16 +112,24 @@ def test_verdict_high_for_reputable_venue():
 @respx.mock
 def test_verdict_medium_for_known_author_preprint():
     _oa()
-    _s2("ARXIV:2005.11401", venue="arXiv.org", externalIds={"ArXiv": "2005.11401"},
-        authors=[{"name": "A B", "hIndex": 40}])
+    _s2(
+        "ARXIV:2005.11401",
+        venue="arXiv.org",
+        externalIds={"ArXiv": "2005.11401"},
+        authors=[{"name": "A B", "hIndex": 40}],
+    )
     assert core.trust_check("2005.11401")["verdict"] == "MEDIUM"
 
 
 @respx.mock
 def test_verdict_low_for_unknown_preprint():
     _oa()
-    _s2("ARXIV:2005.11401", venue="", externalIds={"ArXiv": "2005.11401"},
-        authors=[{"name": "A B", "hIndex": 1}])
+    _s2(
+        "ARXIV:2005.11401",
+        venue="",
+        externalIds={"ArXiv": "2005.11401"},
+        authors=[{"name": "A B", "hIndex": 1}],
+    )
     assert core.trust_check("2005.11401")["verdict"] == "LOW"
 
 
@@ -168,8 +192,12 @@ def test_retraction_from_openalex_forces_low():
 @respx.mock
 def test_openalex_supplies_venue_when_s2_has_none():
     _s2("DOI:10.1/x", venue="", authors=[{"name": "A B"}])
-    _oa(200, is_retracted=False, cited_by_count=7,
-        primary_location={"source": {"type": "journal", "display_name": "Some Journal", "is_in_doaj": True}})
+    _oa(
+        200,
+        is_retracted=False,
+        cited_by_count=7,
+        primary_location={"source": {"type": "journal", "display_name": "Some Journal", "is_in_doaj": True}},
+    )
     r = core.trust_check("10.1/x")
     assert r["venue"] == "Some Journal" and r["verdict"] == "MEDIUM" and r["in_doaj"] is True
     assert r["retracted"] is False
@@ -178,8 +206,14 @@ def test_openalex_supplies_venue_when_s2_has_none():
 @respx.mock
 def test_s2_down_openalex_still_answers():
     respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
-    _oa(200, display_name="T", publication_year=2021, is_retracted=False, cited_by_count=1,
-        primary_location={"source": {"type": "conference", "display_name": "ICML"}})
+    _oa(
+        200,
+        display_name="T",
+        publication_year=2021,
+        is_retracted=False,
+        cited_by_count=1,
+        primary_location={"source": {"type": "conference", "display_name": "ICML"}},
+    )
     r = core.trust_check("10.1/x")
     assert r["title"] == "T" and "semantic_scholar" in r["warnings"][0]
 
@@ -203,7 +237,12 @@ def test_both_sources_down_raises():
 
 @respx.mock
 def test_arxiv_id_maps_to_datacite_doi_for_openalex():
-    _s2("ARXIV:2005.11401", venue="", externalIds={"ArXiv": "2005.11401"}, authors=[{"name": "A", "hIndex": 30}])
+    _s2(
+        "ARXIV:2005.11401",
+        venue="",
+        externalIds={"ArXiv": "2005.11401"},
+        authors=[{"name": "A", "hIndex": 30}],
+    )
     route = respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(200, json={})
     core.trust_check("2005.11401")
     assert "10.48550/arXiv.2005.11401" in str(route.calls[0].request.url)

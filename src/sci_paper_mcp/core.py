@@ -33,7 +33,9 @@ def _dedupe(papers: list[Paper]) -> list[Paper]:
     return unique
 
 
-def search_papers(query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar")) -> dict:
+def search_papers(
+    query: str, limit: int = 10, sources_: tuple[str, ...] = ("arxiv", "semantic_scholar")
+) -> dict:
     found: list[Paper] = []
     errors = []
     searchers = {"arxiv": sources.search_arxiv, "semantic_scholar": sources.search_semantic_scholar}
@@ -77,8 +79,11 @@ def trust_check(identifier: str) -> dict:
     retraction flag and the source type. Either may be missing. A proposal, not a ruling.
     """
     warnings: list[str] = []
-    d = _try(lambda: sources.get_s2_paper(identifier, "influentialCitationCount,authors.hIndex"),
-             "semantic_scholar", warnings)
+    d = _try(
+        lambda: sources.get_s2_paper(identifier, "influentialCitationCount,authors.hIndex"),
+        "semantic_scholar",
+        warnings,
+    )
     p = sources._from_s2(d) if d else None
     oa_id = sources.openalex_work_id(identifier, p.doi if p else None)
     oa = _try(lambda: sources.get_openalex_work(oa_id), "openalex", warnings) if oa_id else None
@@ -93,10 +98,17 @@ def trust_check(identifier: str) -> dict:
     venue = ((p.venue if p else None) or "").strip()
     if not venue and source_type in ("journal", "conference"):
         venue = loc_source.get("display_name") or ""
-    preprint = venue.lower() in ("", "arxiv", "arxiv.org", "arxiv e-prints") or source_type == "repository" and not venue
+    preprint = (
+        venue.lower() in ("", "arxiv", "arxiv.org", "arxiv e-prints")
+        or source_type == "repository"
+        and not venue
+    )
     authors = p.authors if p else []
     arxiv_id = (p.arxiv_id if p else None) or (
-        sources.s2_identifier(identifier)[6:] if sources.s2_identifier(identifier).startswith("ARXIV:") else None)
+        sources.s2_identifier(identifier)[6:]
+        if sources.s2_identifier(identifier).startswith("ARXIV:")
+        else None
+    )
     h_values = [a["hIndex"] for a in (d or {}).get("authors") or [] if a.get("hIndex") is not None]
     max_h = max(h_values, default=None)
     retracted = bool((oa or {}).get("is_retracted"))

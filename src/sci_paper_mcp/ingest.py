@@ -65,19 +65,24 @@ def prepare_ingest(
     document_id = f"arXiv:{arxiv_id}" if arxiv_id else f"doi:{doi}"
     today = today or date.today()
 
+    has_pdf = bool(pdf_path) and pdf_path != "not-found"
+    pdf_state = f"Present — {pdf_path}" if has_pdf else "not found"
+
     body = {
         "Abstract": abstract,
         "Key Points": _bullets(key_points),
         "Relevance to This Project": relevance,
         "Related Pages": _bullets([f"[[{p}]]" for p in related_pages]),
-        "Verification": _bullets([
-            f"**Verdict:** {verdict} — {verdict_reasoning}",
-            f"**Citations:** {citations if citations is not None else 'unknown'}",
-            f"**Venue:** {venue or 'none (preprint)'}",
-            f"**Peer-reviewed:** {'Yes' if peer_reviewed else 'No'}",
-            f"**Semantic Scholar:** {semantic_scholar_url or 'not found'}",
-            f"**PDF:** {'Present — ' + pdf_path if pdf_path and pdf_path != 'not-found' else 'not found'}",
-        ]),
+        "Verification": _bullets(
+            [
+                f"**Verdict:** {verdict} — {verdict_reasoning}",
+                f"**Citations:** {citations if citations is not None else 'unknown'}",
+                f"**Venue:** {venue or 'none (preprint)'}",
+                f"**Peer-reviewed:** {'Yes' if peer_reviewed else 'No'}",
+                f"**Semantic Scholar:** {semantic_scholar_url or 'not found'}",
+                f"**PDF:** {pdf_state}",
+            ]
+        ),
         "Highlights": f"- {{{{embed [[hls__{stem}]]}}}}",
         "Local PDF": f"- [{stem}.pdf]({pdf_path})" if pdf_path and pdf_path != "not-found" else "- not found",
     }
@@ -101,17 +106,40 @@ def prepare_ingest(
         "trustworthiness": verdict,
         "pdf-path": pdf_path or "not-found",
     }
-    calls = [{"tool": "create_page", "arguments": {
-        "title": page_title, "properties": properties, "content": "\n\n".join(parts)}}]
+    calls = [
+        {
+            "tool": "create_page",
+            "arguments": {"title": page_title, "properties": properties, "content": "\n\n".join(parts)},
+        }
+    ]
     calls += [
-        {"tool": "update_page", "arguments": {
-            "page_name": p, "mode": "append", "content": f"- See also [[{page_title}]] — {title}"}}
+        {
+            "tool": "update_page",
+            "arguments": {
+                "page_name": p,
+                "mode": "append",
+                "content": f"- See also [[{page_title}]] — {title}",
+            },
+        }
         for p in related_ok
     ]
-    calls.append({"tool": "update_page", "arguments": {
-        "page_name": "Log", "mode": "append",
-        "content": (f"## [{today.isoformat()}] ingest | {page_title}\n"
+    calls.append(
+        {
+            "tool": "update_page",
+            "arguments": {
+                "page_name": "Log",
+                "mode": "append",
+                "content": (
+                    f"## [{today.isoformat()}] ingest | {page_title}\n"
                     f"- New page ({verdict}); back-links added to {len(related_ok)} related page(s); "
-                    "highlights not yet extracted")}})
-    return {"page": page_title, "calls": calls, "warnings": warnings,
-            "next": "Apply `calls` in order with mcp-logseq, then annotate the PDF in Logseq."}
+                    "highlights not yet extracted"
+                ),
+            },
+        }
+    )
+    return {
+        "page": page_title,
+        "calls": calls,
+        "warnings": warnings,
+        "next": "Apply `calls` in order with mcp-logseq, then annotate the PDF in Logseq.",
+    }

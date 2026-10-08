@@ -39,10 +39,21 @@ def brain(tmp_path):
 
 
 def args(**kw):
-    base = dict(paper_id="RAG-Lewis2020", title="RAG", authors=["P. Lewis"], topic="rag-retrieval",
-                verdict="HIGH", verdict_reasoning="NeurIPS", abstract="abs", key_points=["k"],
-                relevance="r", related_pages=["Concepts/RAG"], arxiv_id="2005.11401",
-                pdf_path="../assets/papers/RAG-Lewis2020-2005.11401.pdf", today=date(2026, 1, 2))
+    base = dict(
+        paper_id="RAG-Lewis2020",
+        title="RAG",
+        authors=["P. Lewis"],
+        topic="rag-retrieval",
+        verdict="HIGH",
+        verdict_reasoning="NeurIPS",
+        abstract="abs",
+        key_points=["k"],
+        relevance="r",
+        related_pages=["Concepts/RAG"],
+        arxiv_id="2005.11401",
+        pdf_path="../assets/papers/RAG-Lewis2020-2005.11401.pdf",
+        today=date(2026, 1, 2),
+    )
     return base | kw
 
 
@@ -62,16 +73,20 @@ def test_missing_agents_md_is_hard_error(tmp_path):
 def test_prepare_renders_calls_in_order(brain):
     r = prepare_ingest(brain, **args())
     tools = [(c["tool"], c["arguments"].get("page_name") or c["arguments"]["title"]) for c in r["calls"]]
-    assert tools == [("create_page", "Sources/Research/RAG-Lewis2020"),
-                     ("update_page", "Concepts/RAG"), ("update_page", "Log")]
+    assert tools == [
+        ("create_page", "Sources/Research/RAG-Lewis2020"),
+        ("update_page", "Concepts/RAG"),
+        ("update_page", "Log"),
+    ]
     create = r["calls"][0]["arguments"]
     assert create["properties"]["trustworthiness"] == "HIGH"
     assert "## Abstract" in create["content"] and "hls__RAG-Lewis2020-2005.11401" in create["content"]
     assert "## [2026-01-02] ingest | Sources/Research/RAG-Lewis2020" in r["calls"][-1]["arguments"]["content"]
 
 
-@pytest.mark.parametrize("bad", [{"topic": "nope"}, {"verdict": "GREAT"}, {"language": "fr"},
-                                 {"arxiv_id": None}])
+@pytest.mark.parametrize(
+    "bad", [{"topic": "nope"}, {"verdict": "GREAT"}, {"language": "fr"}, {"arxiv_id": None}]
+)
 def test_invalid_input_rejected(brain, bad):
     with pytest.raises(SchemaError):
         prepare_ingest(brain, **args(**bad))
