@@ -183,15 +183,22 @@ OPENALEX_FIELDS = (
 _ARXIV_DATACITE = re.compile(r"^10\.48550/arxiv\.(.+)$", re.I)
 
 
-def openalex_work_id(ident: Identifier, s2_doi: str | None = None) -> str | None:
-    """OpenAlex path for a DOI or arXiv id (via its DataCite DOI); a bare S2 id needs the DOI S2 gave."""
+def openalex_work_ids(ident: Identifier, s2_doi: str | None = None) -> list[str]:
+    """OpenAlex paths to try in turn: a DOI as is; an arXiv id via the DOI S2 gave, then its DataCite
+    DOI; a bare S2 id only via the DOI S2 gave.
+
+    For a published preprint S2 gives the journal DOI. OpenAlex often knows the paper only under that
+    one, and a retraction is flagged there, not on the preprint record.
+    """
     match ident.kind:
         case "doi":
-            return f"https://doi.org/{ident.value}"
+            dois = [ident.value]
         case "arxiv":
-            return f"https://doi.org/10.48550/arXiv.{ident.value}"
+            datacite = f"10.48550/arXiv.{ident.value}"
+            dois = ([s2_doi] if s2_doi and s2_doi.lower() != datacite.lower() else []) + [datacite]
         case _:
-            return f"https://doi.org/{s2_doi}" if s2_doi else None
+            dois = [s2_doi] if s2_doi else []
+    return [f"https://doi.org/{d}" for d in dois]
 
 
 def _abstract_from_index(index: dict | None) -> str | None:

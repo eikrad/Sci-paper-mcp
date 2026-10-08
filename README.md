@@ -30,7 +30,10 @@ Needs [uv](https://docs.astral.sh/uv/). Nothing to install separately: point you
 ```
 
 Pages are written with [`mcp-logseq`](https://github.com/ergut/mcp-logseq), which this server is meant to run next to
-(`uv run --no-project --with mcp-logseq mcp-logseq`; the old `mcp<2` pin is no longer needed since 1.9.0).
+(`uv run --no-project --with mcp-logseq==1.10.0 mcp-logseq`; the old `mcp<2` pin is no longer needed since 1.9.0).
+Pin the version, as the tag above does for this server: an MCP server's tool descriptions go straight into the
+agent's context, so an update should be a decision, not a side effect of a restart. 1.10.0 is the version
+verified live (see v0.1.0 below).
 
 ## Tools
 
@@ -98,6 +101,8 @@ share one set of API calls.
 Fixes:
 - `trust_check` no longer reports OpenAlex's split preprint citation count as `citations`.
 - `fetch_pdf` falls back to OpenAlex when Semantic Scholar is down or rate-limited.
+- `trust_check` finds the retraction status of arXiv papers published in a journal: OpenAlex is asked under the
+  journal DOI first, the arXiv DOI second.
 - The highlights embed of a paper ingested before its PDF now matches the PDF name for DOI-only papers and old-style arXiv ids.
 - Search and `trust_check` results carry the OpenAlex signals (`retracted`, `source_type`, ...).
 

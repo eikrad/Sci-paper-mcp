@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass, fields, replace
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -115,11 +116,13 @@ def lookup(identifier: str) -> Lookup:
         return paper
 
     s2 = ask("semantic_scholar", lambda: sources.get_s2_paper(ident))
-    work_id = sources.openalex_work_id(ident, s2.doi if s2 else None)
+    work_ids = sources.openalex_work_ids(ident, s2.doi if s2 else None)
     oa = None
-    if work_id:
-        oa = ask("openalex", lambda: sources.get_openalex_work(work_id))
-    else:
+    for work_id in work_ids:  # the next one only when OpenAlex does not know this one
+        oa = ask("openalex", partial(sources.get_openalex_work, work_id))
+        if outcomes["openalex"] != "not_found":
+            break
+    if not work_ids:
         outcomes["openalex"] = "skipped"
 
     answers = [p for p in (s2, oa) if p is not None]

@@ -1,3 +1,5 @@
+import re
+
 import httpx
 import pytest
 import respx
@@ -306,6 +308,47 @@ def test_arxiv_id_maps_to_datacite_doi_for_openalex():
     route = _oa(200)
     core.trust_check("2005.11401")
     assert "10.48550/arXiv.2005.11401" in str(route.calls[0].request.url)
+
+
+def _oa_doi(doi, status=200, **fields):
+    return respx.get(url__regex=rf".*/works/https://doi\.org/{re.escape(doi)}\b").respond(status, json=fields)
+
+
+def _s2_published_preprint():
+    """An arXiv paper that S2 knows under its journal DOI, as for the MCP papers in TOSEM."""
+    _s2(
+        "ARXIV:2503.23278",
+        venue="ACM Transactions on Software Engineering and Methodology",
+        externalIds={"ArXiv": "2503.23278", "DOI": "10.1145/3796519"},
+        authors=[{"name": "Xinyi Hou", "hIndex": 19}],
+    )
+
+
+@respx.mock
+def test_arxiv_paper_published_in_a_journal_gets_its_retraction_status_from_the_journal_version():
+    _s2_published_preprint()
+    _oa_doi("10.48550/arXiv.2503.23278", 404)
+    _oa_doi("10.1145/3796519", is_retracted=False)
+    r = core.trust_check("2503.23278")
+    assert r["retracted"] is False
+    assert not any("retraction status unknown" in x for x in r["reasons"])
+
+
+@respx.mock
+def test_a_retracted_journal_version_is_not_hidden_by_its_preprint():
+    _s2_published_preprint()
+    _oa_doi("10.48550/arXiv.2503.23278", is_retracted=False)
+    _oa_doi("10.1145/3796519", is_retracted=True)
+    r = core.trust_check("2503.23278")
+    assert r["verdict"] == "LOW" and r["retracted"] is True
+
+
+@respx.mock
+def test_preprint_record_answers_when_openalex_lacks_the_journal_version():
+    _s2_published_preprint()
+    _oa_doi("10.1145/3796519", 404)
+    _oa_doi("10.48550/arXiv.2503.23278", is_retracted=False)
+    assert core.trust_check("2503.23278")["retracted"] is False
 
 
 @respx.mock
