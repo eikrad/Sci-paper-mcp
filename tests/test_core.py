@@ -472,6 +472,22 @@ def test_fetch_pdf_rejects_html(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"%PDF-1" + b"x" * 64, id="announced-by-content-length"),
+        pytest.param(iter([b"%PDF-1", b"x" * 32, b"x" * 32]), id="streamed-without-length"),
+    ],
+)
+@respx.mock
+def test_fetch_pdf_refuses_an_oversized_download_and_saves_nothing(tmp_path, monkeypatch, body):
+    monkeypatch.setattr(core, "MAX_PDF_BYTES", 32)
+    respx.get("https://arxiv.org/pdf/2005.11401").mock(return_value=httpx.Response(200, content=body))
+    with pytest.raises(RuntimeError, match="larger than"):
+        core.fetch_pdf(None, "2005.11401", "X", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
     "identifier,ids",
     [
         pytest.param("2005.11401", {"arxiv_id": "2005.11401"}, id="arxiv"),

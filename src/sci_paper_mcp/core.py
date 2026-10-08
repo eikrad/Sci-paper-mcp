@@ -14,6 +14,7 @@ from .sources import Paper
 from .verdict import is_preprint, propose_verdict
 
 UNPAYWALL_API = "https://api.unpaywall.org/v2"
+MAX_PDF_BYTES = 100 * 2**20  # far above any paper; stops a hostile link from filling memory or disk
 
 _PRIORITY = {"semantic_scholar": 0, "openalex": 1, "arxiv": 2}  # richest metadata first
 
@@ -210,12 +211,20 @@ def _pdf_url(p: Paper) -> str:
 
 
 def _download_pdf(url: str) -> bytes:
-    with httpx.Client(timeout=60, follow_redirects=True) as c:
-        r = c.get(url)
+    """The PDF at `url`, read only up to MAX_PDF_BYTES: the link comes from a third party."""
+    too_big = RuntimeError(f"{url} is larger than {MAX_PDF_BYTES // 2**20} MB; not saved")
+    with httpx.Client(timeout=60, follow_redirects=True) as c, c.stream("GET", url) as r:
         r.raise_for_status()
-    if not r.content.startswith(b"%PDF"):
+        if int(r.headers.get("Content-Length") or 0) > MAX_PDF_BYTES:
+            raise too_big
+        content = bytearray()
+        for chunk in r.iter_bytes():
+            content += chunk
+            if len(content) > MAX_PDF_BYTES:
+                raise too_big
+    if not content.startswith(b"%PDF"):
         raise RuntimeError(f"{url} did not return a PDF")
-    return r.content
+    return bytes(content)
 
 
 def fetch_pdf(
