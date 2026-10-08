@@ -12,6 +12,10 @@ def s2_api_key() -> str | None:
     return os.environ.get("S2_API_KEY") or None
 
 
+def openalex_api_key() -> str | None:
+    return os.environ.get("OPENALEX_API_KEY") or None
+
+
 def second_brain_path() -> Path | None:
     value = os.environ.get("SECOND_BRAIN_PATH")
     return Path(value).expanduser() if value else None

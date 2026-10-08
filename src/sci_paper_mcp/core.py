@@ -57,58 +57,96 @@ def _matches(venue: str, needles: list[str]) -> bool:
     return any(re.search(n, venue, re.I) for n in needles)
 
 
-def trust_check(identifier: str) -> dict:
-    """Propose a HIGH/MEDIUM/LOW verdict from Semantic Scholar metadata.
-
-    A proposal for the agent, not a ruling. Retractions are not checked yet.
-    """
+def _try(fn, name: str, warnings: list[str]):
+    """Run a lookup; a failing or missing source becomes a warning, not an error."""
     try:
-        d = sources.get_s2_paper(identifier, "influentialCitationCount,authors.hIndex")
+        return fn()
     except httpx.HTTPStatusError as e:
         if e.response.status_code != 404:
-            raise
-        return {"verdict": "LOW", "reasons": ["not found on Semantic Scholar"], "found": False}
-    p = sources._from_s2(d)
-    venues = _venues()
-    venue = (p.venue or "").strip()
-    preprint = venue.lower() in ("", "arxiv", "arxiv.org", "arxiv e-prints")
-    h_values = [a["hIndex"] for a in d.get("authors") or [] if a.get("hIndex") is not None]
+            warnings.append(f"{name}: {e}")
+        return None
+    except httpx.HTTPError as e:
+        warnings.append(f"{name}: {e}")
+        return None
+
+
+def trust_check(identifier: str) -> dict:
+    """Propose a HIGH/MEDIUM/LOW verdict from Semantic Scholar and OpenAlex together.
+
+    Semantic Scholar supplies venue, citations and author h-index; OpenAlex adds the
+    retraction flag and the source type. Either may be missing. A proposal, not a ruling.
+    """
+    warnings: list[str] = []
+    d = _try(lambda: sources.get_s2_paper(identifier, "influentialCitationCount,authors.hIndex"),
+             "semantic_scholar", warnings)
+    p = sources._from_s2(d) if d else None
+    oa_id = sources.openalex_work_id(identifier, p.doi if p else None)
+    oa = _try(lambda: sources.get_openalex_work(oa_id), "openalex", warnings) if oa_id else None
+
+    if d is None and oa is None:
+        if warnings:
+            raise RuntimeError("; ".join(warnings))
+        return {"verdict": "LOW", "reasons": ["not found on Semantic Scholar or OpenAlex"], "found": False}
+
+    loc_source = ((oa or {}).get("primary_location") or {}).get("source") or {}
+    source_type = loc_source.get("type")  # journal | conference | repository | ...
+    venue = ((p.venue if p else None) or "").strip()
+    if not venue and source_type in ("journal", "conference"):
+        venue = loc_source.get("display_name") or ""
+    preprint = venue.lower() in ("", "arxiv", "arxiv.org", "arxiv e-prints") or source_type == "repository" and not venue
+    authors = p.authors if p else []
+    arxiv_id = (p.arxiv_id if p else None) or (
+        sources.s2_identifier(identifier)[6:] if sources.s2_identifier(identifier).startswith("ARXIV:") else None)
+    h_values = [a["hIndex"] for a in (d or {}).get("authors") or [] if a.get("hIndex") is not None]
     max_h = max(h_values, default=None)
+    retracted = bool((oa or {}).get("is_retracted"))
+    venues = _venues()
     reasons: list[str] = []
 
-    if not preprint and _matches(venue, venues["suspect"]):
+    if retracted:
+        verdict = "LOW"
+        reasons.append("retracted according to OpenAlex")
+    elif not preprint and _matches(venue, venues["suspect"]):
         verdict = "LOW"
         reasons.append(f"venue '{venue}' is on the suspect list")
-    elif not preprint and _matches(venue, venues["reputable"]) and p.authors:
+    elif not preprint and _matches(venue, venues["reputable"]) and authors:
         verdict = "HIGH"
         reasons.append(f"peer-reviewed at reputable venue '{venue}'")
     elif not preprint:
         verdict = "MEDIUM"
         reasons.append(f"venue '{venue}' is not on the reputable list (mid-tier or unknown)")
-    elif p.arxiv_id and max_h is not None and max_h >= 10:
+    elif arxiv_id and max_h is not None and max_h >= 10:
         verdict = "MEDIUM"
         reasons.append(f"arXiv preprint; best author h-index {max_h}")
-    elif p.arxiv_id:
+    elif arxiv_id:
         verdict = "LOW"
         reasons.append("arXiv preprint without verifiable established authors")
     else:
         verdict = "LOW"
         reasons.append("no venue and no arXiv id")
-    if not p.authors:
+    if d is not None and not authors:
         reasons.append("no authors listed")
+    if oa is None:
+        reasons.append("retraction status unknown (OpenAlex unavailable)")
+
     return {
         "verdict": verdict,
         "reasons": reasons,
+        "warnings": warnings,
         "found": True,
-        "title": p.title,
-        "year": p.year,
+        "title": (p.title if p else None) or (oa or {}).get("display_name"),
+        "year": (p.year if p else None) or (oa or {}).get("publication_year"),
         "venue": venue or None,
         "peer_reviewed": not preprint,
-        "citations": p.citations,
-        "influential_citations": d.get("influentialCitationCount"),
+        "retracted": retracted if oa is not None else None,
+        "source_type": source_type,
+        "in_doaj": loc_source.get("is_in_doaj"),
+        "citations": p.citations if p and p.citations is not None else (oa or {}).get("cited_by_count"),
+        "citations_openalex": (oa or {}).get("cited_by_count"),
+        "influential_citations": (d or {}).get("influentialCitationCount"),
         "max_author_h_index": max_h,
-        "semantic_scholar_url": f"https://www.semanticscholar.org/paper/{p.s2_id}" if p.s2_id else None,
-        "note": "Proposal from Semantic Scholar metadata; retractions not checked.",
+        "semantic_scholar_url": f"https://www.semanticscholar.org/paper/{p.s2_id}" if p and p.s2_id else None,
+        "openalex_id": (oa or {}).get("id"),
     }
 
 

@@ -37,6 +37,7 @@ def no_sleep(monkeypatch):
 ])
 @respx.mock
 def test_venue_matching(venue, expected):
+    _oa()
     _s2("DOI:10.1/x", venue=venue, authors=[{"name": "A B"}])
     assert core.trust_check("10.1/x")["verdict"] == expected
 
@@ -76,12 +77,17 @@ def test_identifier_mapping(raw, expected):
     assert sources.s2_identifier(raw) == expected
 
 
+def _oa(status=404, **fields):
+    respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(status, json=fields)
+
+
 def _s2(path, **fields):
     respx.get(f"{sources.S2_API}/paper/{path}").respond(json={"title": "T", "year": 2020, **fields})
 
 
 @respx.mock
 def test_verdict_high_for_reputable_venue():
+    _oa()
     _s2("DOI:10.1/x", venue="Advances in NeurIPS", authors=[{"name": "A B", "hIndex": 5}])
     r = core.trust_check("10.1/x")
     assert r["verdict"] == "HIGH" and r["peer_reviewed"]
@@ -89,6 +95,7 @@ def test_verdict_high_for_reputable_venue():
 
 @respx.mock
 def test_verdict_medium_for_known_author_preprint():
+    _oa()
     _s2("ARXIV:2005.11401", venue="arXiv.org", externalIds={"ArXiv": "2005.11401"},
         authors=[{"name": "A B", "hIndex": 40}])
     assert core.trust_check("2005.11401")["verdict"] == "MEDIUM"
@@ -96,6 +103,7 @@ def test_verdict_medium_for_known_author_preprint():
 
 @respx.mock
 def test_verdict_low_for_unknown_preprint():
+    _oa()
     _s2("ARXIV:2005.11401", venue="", externalIds={"ArXiv": "2005.11401"},
         authors=[{"name": "A B", "hIndex": 1}])
     assert core.trust_check("2005.11401")["verdict"] == "LOW"
@@ -103,6 +111,7 @@ def test_verdict_low_for_unknown_preprint():
 
 @respx.mock
 def test_verdict_low_when_not_found():
+    _oa()
     respx.get(f"{sources.S2_API}/paper/DOI:10.1/nope").respond(404)
     r = core.trust_check("10.1/nope")
     assert r["verdict"] == "LOW" and not r["found"]
@@ -146,3 +155,63 @@ def test_unpaywall_needs_email(monkeypatch):
     _s2("DOI:10.1/x", externalIds={"DOI": "10.1/x"}, authors=[{"name": "A B"}])
     with pytest.raises(RuntimeError, match="UNPAYWALL_EMAIL"):
         core.fetch_pdf("10.1/x")
+
+
+@respx.mock
+def test_retraction_from_openalex_forces_low():
+    _s2("DOI:10.1/x", venue="NeurIPS", authors=[{"name": "A B", "hIndex": 50}])
+    _oa(200, is_retracted=True, cited_by_count=3)
+    r = core.trust_check("10.1/x")
+    assert r["verdict"] == "LOW" and r["retracted"] is True and "retracted" in r["reasons"][0]
+
+
+@respx.mock
+def test_openalex_supplies_venue_when_s2_has_none():
+    _s2("DOI:10.1/x", venue="", authors=[{"name": "A B"}])
+    _oa(200, is_retracted=False, cited_by_count=7,
+        primary_location={"source": {"type": "journal", "display_name": "Some Journal", "is_in_doaj": True}})
+    r = core.trust_check("10.1/x")
+    assert r["venue"] == "Some Journal" and r["verdict"] == "MEDIUM" and r["in_doaj"] is True
+    assert r["retracted"] is False
+
+
+@respx.mock
+def test_s2_down_openalex_still_answers():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa(200, display_name="T", publication_year=2021, is_retracted=False, cited_by_count=1,
+        primary_location={"source": {"type": "conference", "display_name": "ICML"}})
+    r = core.trust_check("10.1/x")
+    assert r["title"] == "T" and "semantic_scholar" in r["warnings"][0]
+
+
+@respx.mock
+def test_openalex_down_flags_unknown_retraction():
+    _s2("DOI:10.1/x", venue="ICML", authors=[{"name": "A B"}])
+    _oa(500)
+    r = core.trust_check("10.1/x")
+    assert r["verdict"] == "HIGH" and r["retracted"] is None
+    assert any("retraction status unknown" in x for x in r["reasons"])
+
+
+@respx.mock
+def test_both_sources_down_raises():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(429)
+    _oa(500)
+    with pytest.raises(RuntimeError, match="semantic_scholar"):
+        core.trust_check("10.1/x")
+
+
+@respx.mock
+def test_arxiv_id_maps_to_datacite_doi_for_openalex():
+    _s2("ARXIV:2005.11401", venue="", externalIds={"ArXiv": "2005.11401"}, authors=[{"name": "A", "hIndex": 30}])
+    route = respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(200, json={})
+    core.trust_check("2005.11401")
+    assert "10.48550/arXiv.2005.11401" in str(route.calls[0].request.url)
+
+
+@respx.mock
+def test_s2_key_not_sent_to_arxiv(monkeypatch):
+    monkeypatch.setenv("S2_API_KEY", "secret")
+    route = respx.get(sources.ARXIV_API).respond(text=ATOM)
+    sources.search_arxiv("rag", 1)
+    assert "x-api-key" not in route.calls[0].request.headers

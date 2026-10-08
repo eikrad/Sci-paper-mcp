@@ -1,4 +1,4 @@
-"""Thin clients for arXiv and Semantic Scholar."""
+"""Thin clients for arXiv, Semantic Scholar and OpenAlex."""
 
 import re
 import time
@@ -11,6 +11,7 @@ from . import config
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 S2_API = "https://api.semanticscholar.org/graph/v1"
+OPENALEX_API = "https://api.openalex.org"
 ATOM = {"a": "http://www.w3.org/2005/Atom"}
 S2_FIELDS = (
     "title,abstract,year,authors,venue,externalIds,citationCount,"
@@ -39,22 +40,29 @@ class Paper:
 
 
 def _client() -> httpx.Client:
-    headers = {"User-Agent": "sci-paper-mcp/0.1"}
-    if key := config.s2_api_key():
-        headers["x-api-key"] = key
-    return httpx.Client(headers=headers, timeout=30, follow_redirects=True)
+    return httpx.Client(headers={"User-Agent": "sci-paper-mcp/0.1"}, timeout=30, follow_redirects=True)
 
 
-def _get(c: httpx.Client, url: str, params: dict, tries: int = 4) -> httpx.Response:
-    """GET with backoff on 429; Semantic Scholar throttles anonymous clients hard."""
+def _s2_headers() -> dict:
+    key = config.s2_api_key()
+    return {"x-api-key": key} if key else {}
+
+
+def _openalex_headers() -> dict:
+    key = config.openalex_api_key()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+def _get(c: httpx.Client, url: str, params: dict, headers: dict, key_hint: str, tries: int = 4) -> httpx.Response:
+    """GET with backoff on 429; both scholarly APIs throttle anonymous clients."""
     for attempt in range(tries):
-        r = c.get(url, params=params)
+        r = c.get(url, params=params, headers=headers)
         if r.status_code != 429 or attempt == tries - 1:
             break
         retry_after = r.headers.get("Retry-After", "")
         time.sleep(min(float(retry_after) if retry_after.isdigit() else 2**attempt, 10))
     if r.status_code == 429:
-        hint = "" if config.s2_api_key() else " Set S2_API_KEY for a higher rate limit."
+        hint = "" if headers else f" Set {key_hint} for a higher rate limit."
         raise httpx.HTTPStatusError(f"rate limited by {url}.{hint}", request=r.request, response=r)
     r.raise_for_status()
     return r
@@ -105,7 +113,7 @@ def _from_s2(d: dict) -> Paper:
 
 def search_semantic_scholar(query: str, limit: int) -> list[Paper]:
     with _client() as c:
-        r = _get(c, f"{S2_API}/paper/search", {"query": query, "limit": limit, "fields": S2_FIELDS})
+        r = _get(c, f"{S2_API}/paper/search", {"query": query, "limit": limit, "fields": S2_FIELDS}, _s2_headers(), "S2_API_KEY")
     return [_from_s2(d) for d in r.json().get("data", [])]
 
 
@@ -126,5 +134,30 @@ def s2_identifier(identifier: str) -> str:
 def get_s2_paper(identifier: str, extra_fields: str = "") -> dict:
     fields = S2_FIELDS + (f",{extra_fields}" if extra_fields else "")
     with _client() as c:
-        r = _get(c, f"{S2_API}/paper/{s2_identifier(identifier)}", {"fields": fields})
+        r = _get(c, f"{S2_API}/paper/{s2_identifier(identifier)}", {"fields": fields}, _s2_headers(), "S2_API_KEY")
+    return r.json()
+
+
+OPENALEX_FIELDS = (
+    "id,doi,display_name,publication_year,is_retracted,cited_by_count,"
+    "primary_location,open_access"
+)
+
+
+def openalex_work_id(identifier: str, s2_doi: str | None = None) -> str | None:
+    """OpenAlex path for a DOI or arXiv id (via its DataCite DOI); None for bare S2 ids."""
+    ident = s2_identifier(identifier)
+    if ident.startswith("DOI:"):
+        return f"https://doi.org/{ident[4:]}"
+    if ident.startswith("ARXIV:"):
+        return f"https://doi.org/10.48550/arXiv.{ident[6:]}"
+    if s2_doi:
+        return f"https://doi.org/{s2_doi}"
+    return None
+
+
+def get_openalex_work(work_id: str) -> dict:
+    with _client() as c:
+        r = _get(c, f"{OPENALEX_API}/works/{work_id}", {"select": OPENALEX_FIELDS},
+                 _openalex_headers(), "OPENALEX_API_KEY")
     return r.json()
