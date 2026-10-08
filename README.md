@@ -81,6 +81,7 @@ repo's CI, copy [examples/second-brain-lint.yml](examples/second-brain-lint.yml)
 
 Branches: feature → `staging` → `main`. PRs into `main` come only from `staging`, and every commit needs a
 Conventional Commit prefix (`feat:`, `fix:`, `refactor:`, `docs:`, …); CI checks both.
+Releases are cut by release-please from those prefixes; see [docs/releasing.md](docs/releasing.md).
 
 ## Releases
 
