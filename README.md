@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/eikrad/Sci-paper-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/eikrad/Sci-paper-mcp/actions/workflows/ci.yml)
 
-MCP server that finds research papers on arXiv and Semantic Scholar, checks how trustworthy they are
-(venue, citations, authors, retractions via OpenAlex), fetches the open-access PDF and prepares a
+MCP server that finds research papers on arXiv, Semantic Scholar and OpenAlex, checks how trustworthy
+they are (venue, citations, authors, retractions), fetches the open-access PDF and prepares a
 structured page for your Logseq second brain. Runs locally over stdio and works with Claude Code,
 Cursor, Codex, opencode and any other MCP-capable agent.
 
@@ -38,11 +38,15 @@ Pages are written with [`mcp-logseq`](https://github.com/ergut/mcp-logseq), whic
 |---|---|
 | `search_papers` | arXiv, Semantic Scholar and OpenAlex, merged and de-duplicated (richer sources fill gaps); `warnings` lists failed sources |
 | `trust_check` | Proposes HIGH/MEDIUM/LOW with reasons; merges Semantic Scholar and OpenAlex |
-| `fetch_pdf` | Saves `assets/papers/<PAPER-ID>-<id>.pdf`, never overwrites |
+| `fetch_pdf` | Saves `assets/papers/<PAPER-ID>-<id>.pdf`, never overwrites. PDF from arXiv, Semantic Scholar, OpenAlex or Unpaywall |
 | `prepare_ingest` | Takes the paper's identifier plus your judgement (topic, verdict, key points, relevance, related pages), looks up the metadata and finds the PDF in `assets/papers/` itself, validates against the brain's `AGENTS.md` and returns `create_page`/`update_page` calls for `mcp-logseq`. Writes nothing |
 | `lint` | Read-only health check of the brain |
 
 Pages are written by the agent through `mcp-logseq`; this server only reads the graph and writes PDFs.
+
+A typical ingest: `trust_check` → `fetch_pdf` → `prepare_ingest` with the same identifier (and the same
+`paper_id`, if you choose one) → apply the returned `calls` with `mcp-logseq`. The paper is looked up once
+per server run and shared by all three tools.
 
 ## Configuration (environment)
 
@@ -63,8 +67,8 @@ uv run sci-paper-mcp lint --brain ~/projects/second-brain   # exit 1 on errors (
 
 ## Development
 
-Test-driven; tests sit at the public seams (core functions with HTTP mocked, fixture brains, the MCP
-surface, the CLI). Live-API tests are marked `live` and excluded from CI.
+Test-driven; tests sit at the public seams: core functions with HTTP mocked, the verdict rules as a pure
+function, fixture brains (including an ingest-then-lint round trip), the MCP surface and the CLI. Live-API tests are marked `live` and excluded from CI.
 
 ```bash
 uv sync
