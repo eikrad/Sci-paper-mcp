@@ -7,8 +7,15 @@ reputable = [
   'association for computational linguistics', '\bsigir\b', 'research and development in information retrieval',
   '\bkdd\b', '\baaai\b', '\bijcai\b', '\bcvpr\b', '\biccv\b', '\beccv\b', '\btacl\b', '\bjmlr\b', '\btmlr\b',
   '^nature$', '^science$',
-  # security (top four)
+  # security (the top four conferences, two IEEE journals)
   'usenix security', 'symposium on security and privacy', 'conference on computer and communications security',
   'network and distributed system security', '\bndss\b',
+  'transactions on dependable and secure computing', 'transactions on information forensics and security',
+  # software engineering (TOSEM and TSE share the first pattern)
+  'transactions on software engineering', '^international conference on software engineering$', '\bicse\b',
+  '\bfse\b', 'foundations of software engineering', 'proceedings of the acm on software engineering',
+  'conference on automated software engineering', '\bissta\b', 'symposium on software testing and analysis',
+  # language models
+  'conference on language modeling', '\bcolm\b',
 ]
 suspect = []
