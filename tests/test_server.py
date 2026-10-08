@@ -22,7 +22,8 @@ async def test_tool_names_are_stable(client):
 
 async def test_tool_parameters_are_stable(client):
     tools = {t.name: t.input_schema for t in await client.list_tools()}
-    assert set(tools["fetch_pdf"]["properties"]) == {"identifier", "paper_id", "dest_dir"}
+    # no dest_dir: an agent steered by fetched text must not pick where files are written
+    assert set(tools["fetch_pdf"]["properties"]) == {"identifier", "paper_id"}
     assert tools["trust_check"]["required"] == ["identifier"]
     ingest = tools["prepare_ingest"]
     assert set(ingest["properties"]) == {

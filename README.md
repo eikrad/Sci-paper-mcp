@@ -98,6 +98,10 @@ like `fetch_pdf` does). The page title now uses the same file-safe PAPER-ID as t
 calls; lookups that found the paper are remembered while the server runs, so `trust_check`, `fetch_pdf` and `prepare_ingest`
 share one set of API calls.
 
+**Breaking:** the `fetch_pdf` tool no longer takes `dest_dir`; PDFs always go into the brain's `assets/papers/` (without a
+brain, the cache dir). An agent steered by text in a fetched abstract could otherwise pick where files are written. The CLI
+keeps `--dest`.
+
 Fixes:
 - `trust_check` no longer reports OpenAlex's split preprint citation count as `citations`.
 - `fetch_pdf` falls back to OpenAlex when Semantic Scholar is down or rate-limited.
