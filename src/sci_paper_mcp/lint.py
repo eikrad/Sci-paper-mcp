@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .brain import (
     REQUIRED_PROPERTIES,
+    TRIPLE_LOWBAR,
     Brain,
     embedded_highlights,
     is_paper_title,
@@ -57,6 +58,23 @@ def lint(root: Path | None, today: date | None = None) -> dict:
     def add(check: str, page: str, message: str, severity: str = "error") -> None:
         findings.append({"check": check, "severity": severity, "page": page, "message": message})
 
+    files = brain.page_files()
+    for title, claimed_by in files.items():
+        if len(claimed_by) > 1:
+            names = ", ".join(f.name for f in claimed_by)
+            add("files", title, f"{len(claimed_by)} files claim this page, Logseq shows only one: {names}")
+    if not brain.pins_triple_lowbar:
+        for title, claimed_by in files.items():
+            for f in claimed_by:
+                if TRIPLE_LOWBAR in f.stem:
+                    add(
+                        "files",
+                        title,
+                        f"{f.name} uses '___' but logseq/config.edn has no :file-name-format "
+                        f":triple-lowbar, so Logseq reads it as a page titled '{f.stem}' and writes "
+                        f"to '{title}' land in a new file",
+                        "warning",
+                    )
     if schema.template_topics is not None:
         in_templates = set(schema.template_topics)
         missing = sorted(set(schema.taxonomy) - in_templates)

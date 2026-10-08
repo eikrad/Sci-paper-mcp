@@ -154,6 +154,7 @@ def save_pdf(folder: Path, name: str, download: Callable[[], bytes]) -> Path:
 # --- the graph -------------------------------------------------------------------------------------
 
 _SEPARATORS = ("%2F", "___")  # how a file name encodes the `/` of a page title
+TRIPLE_LOWBAR = _SEPARATORS[1]
 
 
 def _title(path: Path) -> str:
@@ -206,6 +207,23 @@ class Brain:
     def pages(self) -> dict[str, str]:
         """Every page's text by title, in file-name order."""
         return {_title(p): p.read_text() for p in sorted((self.root / "pages").glob("*.md"))}
+
+    def page_files(self) -> dict[str, list[Path]]:
+        """Every page title with the file(s) that claim it; more than one is a duplicate page."""
+        files: dict[str, list[Path]] = {}
+        for p in sorted((self.root / "pages").glob("*.md")):
+            files.setdefault(_title(p), []).append(p)
+        return files
+
+    @property
+    def pins_triple_lowbar(self) -> bool:
+        """Whether Logseq is told to read `___` in file names as `/` (`:file-name-format :triple-lowbar`).
+
+        Without it Logseq reads a `Concepts___Foo.md` as a page literally titled `Concepts___Foo`, so
+        writes to `Concepts/Foo` land in a new `Concepts%2FFoo.md`.
+        """
+        config = self.root / "logseq" / "config.edn"
+        return config.exists() and bool(re.search(r":file-name-format\s+:triple-lowbar", config.read_text()))
 
     def _file(self, title: str) -> Path | None:
         files = (self.root / "pages" / f"{title.replace('/', sep)}.md" for sep in _SEPARATORS)
