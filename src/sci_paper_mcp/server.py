@@ -64,6 +64,8 @@ def prepare_ingest(
 
     Returns ordered `calls` (create_page, back-link update_page, Log update_page) for the agent to
     apply via mcp-logseq. pdf_path is the `pdf_path_property` returned by fetch_pdf.
+
+    Refuses if Logseq has a different graph open than SECOND_BRAIN_PATH (needs LOGSEQ_API_TOKEN).
     """
     return _prepare_ingest(
         config.second_brain_path(),

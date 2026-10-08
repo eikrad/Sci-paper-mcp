@@ -3,6 +3,9 @@
 from datetime import date
 from pathlib import Path
 
+import httpx
+
+from . import config
 from .schema import Schema, SchemaError, load_schema, page_exists
 
 VERDICTS = ("HIGH", "MEDIUM", "LOW")
@@ -10,6 +13,35 @@ VERDICTS = ("HIGH", "MEDIUM", "LOW")
 
 def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {i}" for i in items)
+
+
+def _verify_open_graph(root: Path) -> str | None:
+    """Ask Logseq which graph is open (read-only). Raises on a mismatch, returns a warning if unsure.
+
+    mcp-logseq writes into whatever graph Logseq has open, independent of SECOND_BRAIN_PATH.
+    """
+    token = config.logseq_api_token()
+    if not token:
+        return "could not verify the open Logseq graph: LOGSEQ_API_TOKEN is not set"
+    try:
+        r = httpx.post(
+            f"{config.logseq_api_url()}/api",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"method": "logseq.App.getCurrentGraph", "args": []},
+            timeout=10,
+        )
+        r.raise_for_status()
+        graph = r.json()
+    except (httpx.HTTPError, ValueError) as e:
+        return f"could not verify the open Logseq graph: {e}"
+    if not graph or not graph.get("path"):
+        raise SchemaError("no graph is open in Logseq; open the brain before applying the calls")
+    if Path(graph["path"]).resolve() != root.resolve():
+        raise SchemaError(
+            f"wrong graph: Logseq has {graph['path']} open but SECOND_BRAIN_PATH is {root}. "
+            "Open the right graph in Logseq, or the pages would land in the wrong brain."
+        )
+    return None
 
 
 def prepare_ingest(
@@ -36,8 +68,10 @@ def prepare_ingest(
     language: str = "en",
     code_url: str | None = None,
     today: date | None = None,
+    verify_graph: bool = True,
 ) -> dict:
     schema: Schema = load_schema(root)
+    graph_warning = _verify_open_graph(schema.root) if verify_graph else None
     errors = []
     if topic not in schema.taxonomy:
         errors.append(f"topic '{topic}' not in taxonomy {schema.taxonomy}")
@@ -53,7 +87,7 @@ def prepare_ingest(
     if errors:
         raise SchemaError("; ".join(errors))
 
-    warnings = []
+    warnings = [graph_warning] if graph_warning else []
     if not 3 <= len(related_pages) <= 5:
         warnings.append(f"AGENTS.md asks for 3-5 related pages, got {len(related_pages)}")
     missing = [p for p in related_pages if not page_exists(schema.root, p)]

@@ -25,6 +25,7 @@ Pages are written by the agent through `mcp-logseq`; this server only reads the 
 |---|---|
 | `SECOND_BRAIN_PATH` | Logseq graph to read rules from / write PDFs into |
 | `UNPAYWALL_EMAIL` | Contact address for Unpaywall lookups |
+| `LOGSEQ_API_URL`, `LOGSEQ_API_TOKEN` | Same values as for `mcp-logseq`. `prepare_ingest` asks Logseq (read-only) which graph is open and refuses if it is not `SECOND_BRAIN_PATH` |
 | `S2_API_KEY`, `OPENALEX_API_KEY` | Optional; raise rate limits. Each key is sent only to its own service |
 
 ## Use
