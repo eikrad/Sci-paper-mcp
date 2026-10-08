@@ -39,7 +39,7 @@ Pages are written with [`mcp-logseq`](https://github.com/ergut/mcp-logseq), whic
 | `search_papers` | arXiv, Semantic Scholar and OpenAlex, merged and de-duplicated (richer sources fill gaps); `warnings` lists failed sources |
 | `trust_check` | Proposes HIGH/MEDIUM/LOW with reasons; merges Semantic Scholar and OpenAlex |
 | `fetch_pdf` | Saves `assets/papers/<PAPER-ID>-<id>.pdf`, never overwrites |
-| `prepare_ingest` | Validates against the brain's `AGENTS.md`, returns `create_page`/`update_page` calls for `mcp-logseq`. Writes nothing |
+| `prepare_ingest` | Takes the paper's identifier plus your judgement (topic, verdict, key points, relevance, related pages), looks up the metadata and finds the PDF in `assets/papers/` itself, validates against the brain's `AGENTS.md` and returns `create_page`/`update_page` calls for `mcp-logseq`. Writes nothing |
 | `lint` | Read-only health check of the brain |
 
 Pages are written by the agent through `mcp-logseq`; this server only reads the graph and writes PDFs.
@@ -76,6 +76,22 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs ruff and pytest. 
 repo's CI, copy [examples/second-brain-lint.yml](examples/second-brain-lint.yml).
 
 ## Releases
+
+### Unreleased
+
+**Breaking:** `prepare_ingest` takes the paper's `identifier` (DOI, arXiv id or S2 id) instead of copied metadata. The server
+looks up title, authors, venue, year, citations, ids, the Semantic Scholar link and peer-review status itself and finds the
+PDF in `assets/papers/` (run `fetch_pdf` first). Removed: `title`, `authors`, `arxiv_id`, `doi`, `venue`, `year`, `citations`,
+`peer_reviewed`, `semantic_scholar_url`, `pdf_path`; `abstract` is now an optional override and `paper_id` is optional (derived
+like `fetch_pdf` does). The page title now uses the same file-safe PAPER-ID as the PDF name. `prepare_ingest` now makes network
+calls; lookups that found the paper are remembered while the server runs, so `trust_check`, `fetch_pdf` and `prepare_ingest`
+share one set of API calls.
+
+Fixes:
+- `trust_check` no longer reports OpenAlex's split preprint citation count as `citations`.
+- `fetch_pdf` falls back to OpenAlex when Semantic Scholar is down or rate-limited.
+- The highlights embed of a paper ingested before its PDF now matches the PDF name for DOI-only papers and old-style arXiv ids.
+- Search and `trust_check` results carry the OpenAlex signals (`retracted`, `source_type`, ...).
 
 ### v0.1.0
 

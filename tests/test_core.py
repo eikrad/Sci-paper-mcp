@@ -1,7 +1,7 @@
 import httpx
 import pytest
 import respx
-from conftest import ingest_args
+from conftest import fake_lookup, ingest_args
 
 from sci_paper_mcp import core, sources
 from sci_paper_mcp.ingest import prepare_ingest
@@ -437,24 +437,83 @@ def test_fetch_pdf_rejects_html(tmp_path):
     ],
 )
 @respx.mock
-def test_highlights_page_of_a_paper_ingested_first_names_the_pdf_fetched_later(make_brain, identifier, ids):
+def test_highlights_page_of_a_paper_ingested_first_names_the_pdf_fetched_later(
+    make_brain, monkeypatch, identifier, ids
+):
     brain = make_brain(pages={"Concepts/RAG": "- x"})
-    if identifier.startswith("10."):
-        respx.get(f"{sources.S2_API}/paper/DOI:{identifier}").respond(429)
-        _oa(
-            200,
-            doi=f"https://doi.org/{identifier}",
-            best_oa_location={"pdf_url": "https://example.org/x.pdf"},
-        )
-        respx.get("https://example.org/x.pdf").respond(content=b"%PDF-1")
-    else:
-        respx.get(f"https://arxiv.org/pdf/{identifier}").respond(content=b"%PDF-1")
+    lookup = fake_lookup(pdf_url="https://example.org/x.pdf", **ids)
+    monkeypatch.setattr(core, "lookup", lookup)
+    respx.route(method="GET").respond(content=b"%PDF-1")
 
-    page = prepare_ingest(brain, **ingest_args(pdf_path=None, **ids))["calls"][0]["arguments"]["content"]
+    page = prepare_ingest(brain, **ingest_args(identifier=identifier, lookup=lookup))
     core.fetch_pdf(brain, identifier, "RAG-Lewis2020")
 
     [pdf] = (brain / "assets" / "papers").glob("*.pdf")
-    assert f"{{{{embed [[hls__{pdf.stem}]]}}}}" in page
+    assert f"{{{{embed [[hls__{pdf.stem}]]}}}}" in page["calls"][0]["arguments"]["content"]
+
+
+@respx.mock
+def test_prepare_ingest_picks_up_where_fetch_pdf_left_off(make_brain, monkeypatch):
+    brain = make_brain(pages={"Concepts/RAG": "- x"})
+    lookup = fake_lookup()
+    monkeypatch.setattr(core, "lookup", lookup)
+    respx.get("https://arxiv.org/pdf/2005.11401").respond(content=b"%PDF-1")
+
+    fetched = core.fetch_pdf(brain, "2005.11401")
+    ingest = prepare_ingest(brain, **ingest_args(paper_id=None, lookup=lookup))
+
+    assert ingest["page"] == f"Sources/Research/{fetched['paper_id']}"
+    assert ingest["calls"][0]["arguments"]["properties"]["pdf-path"] == fetched["pdf_path_property"]
+
+
+@respx.mock
+def test_a_lookup_is_remembered_across_tools_and_spellings_of_the_identifier():
+    s2 = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(
+        json={"title": "T", "year": 2020, "authors": [{"name": "A B"}], "venue": "ICML"}
+    )
+    oa = _oa(200, is_retracted=False)
+    first = core.lookup("10.1/x")
+    assert core.trust_check("10.1/x")["found"] and core.lookup("https://doi.org/10.1/x") == first
+    assert (s2.call_count, oa.call_count) == (1, 1)
+
+
+@respx.mock
+def test_callers_cannot_corrupt_the_memo_by_mutating_a_lookup():
+    respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(
+        json={"title": "T", "year": 2020, "authors": [{"name": "A B"}]}
+    )
+    _oa(200, is_retracted=False)
+    first = core.lookup("10.1/x")
+    first.paper.title = "Changed"
+    first.paper.authors.append("Mallory")
+    first.outcomes.clear()
+    first.warnings.append("made up")
+    second = core.lookup("10.1/x")
+    second.paper.authors.clear()
+
+    third = core.lookup("10.1/x")
+    assert (third.paper.title, third.paper.authors, third.warnings) == ("T", ["A B"], [])
+    assert third.outcomes == {"semantic_scholar": "found", "openalex": "found"}
+
+
+@pytest.mark.parametrize(
+    "s2_status,openalex_status",
+    [
+        pytest.param(429, 200, id="a-source-failed-but-the-other-knew-the-paper"),
+        pytest.param(404, 404, id="no-source-knows-the-paper"),
+    ],
+)
+@respx.mock
+def test_failures_and_unknown_papers_are_not_remembered(s2_status, openalex_status):
+    s2 = respx.get(f"{sources.S2_API}/paper/DOI:10.1/x").respond(s2_status)
+    openalex = _oa(openalex_status, display_name="T")
+    first = core.lookup("10.1/x")
+    assert first.warnings or first.paper is None
+
+    s2.respond(json={"title": "T", "year": 2020})
+    openalex.respond(200, json={"display_name": "T"})
+    second = core.lookup("10.1/x")
+    assert second.paper is not None and second.warnings == []
 
 
 @respx.mock

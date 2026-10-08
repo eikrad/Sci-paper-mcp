@@ -1,5 +1,6 @@
 """The phase-1 tools as plain functions; CLI and MCP both call these."""
 
+from copy import deepcopy
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Literal
@@ -80,14 +81,23 @@ class Lookup:
     warnings: list[str]  # one line per failed source
 
 
+_memo: dict[sources.Identifier, Lookup] = {}  # complete lookups only, for the life of the process
+
+
 def lookup(identifier: str) -> Lookup:
     """One merged Paper for a DOI, arXiv id or S2 id, from Semantic Scholar and OpenAlex.
 
     A source that fails (network, 5xx, 429) becomes a warning; one that does not know the paper
     (404) is only an outcome. Raises RuntimeError when no source answered and one failed, since
     the failed one may know the paper.
+
+    trust_check, fetch_pdf and prepare_ingest look up the same paper in turn, so a lookup that found
+    the paper with no source failing is remembered (anonymous Semantic Scholar throttles hard). Failures
+    and unknown papers never are; every caller gets its own copy.
     """
     ident = sources.Identifier.parse(identifier)
+    if ident in _memo:
+        return deepcopy(_memo[ident])
     outcomes: dict[str, Outcome] = {}
     warnings: list[str] = []
 
@@ -122,7 +132,10 @@ def lookup(identifier: str) -> Lookup:
         paper.doi = paper.doi or ident.value
     elif ident.kind == "arxiv":
         paper.arxiv_id = paper.arxiv_id or ident.value
-    return Lookup(paper, outcomes, warnings)
+    found = Lookup(paper, outcomes, warnings)
+    if not warnings:
+        _memo[ident] = deepcopy(found)
+    return found
 
 
 _RETRACTION_GAP = {
@@ -161,7 +174,7 @@ def trust_check(identifier: str) -> dict:
         "citations_openalex": p.citations_openalex,
         "influential_citations": p.influential_citations,
         "max_author_h_index": p.max_author_h_index,
-        "semantic_scholar_url": f"https://www.semanticscholar.org/paper/{p.s2_id}" if p.s2_id else None,
+        "semantic_scholar_url": p.semantic_scholar_url,
         "openalex_id": p.openalex_id,
     }
 

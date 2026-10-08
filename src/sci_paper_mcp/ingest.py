@@ -1,21 +1,23 @@
-"""prepare_ingest: validate and render a paper page; the agent applies it via mcp-logseq (ADR 0002)."""
+"""prepare_ingest: look the paper up, validate and render its page; the agent applies it (ADR 0002, 0007)."""
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
 import httpx
 
-from . import config
+from . import config, core
 from .brain import (
     Brain,
     SchemaError,
     highlights_embed,
-    names_pdf,
     paper_properties,
     paper_title,
     pdf_name,
     pdf_stem,
+    resolve_paper_id,
 )
+from .verdict import is_preprint
 
 VERDICTS = ("HIGH", "MEDIUM", "LOW")
 
@@ -53,35 +55,34 @@ def _verify_open_graph(root: Path) -> str | None:
     return None
 
 
+def _taken(brain: Brain, paper_id: str) -> list[str]:
+    title = paper_title(paper_id)
+    return [f"page '{title}' already exists"] if brain.has_page(title) else []
+
+
 def prepare_ingest(
     root: Path | None,
     *,
-    paper_id: str,
-    title: str,
-    authors: list[str],
+    identifier: str,
     topic: str,
     verdict: str,
     verdict_reasoning: str,
-    abstract: str,
     key_points: list[str],
     relevance: str,
     related_pages: list[str],
-    arxiv_id: str | None = None,
-    doi: str | None = None,
-    venue: str | None = None,
-    year: int | None = None,
-    citations: int | None = None,
-    peer_reviewed: bool = False,
-    semantic_scholar_url: str | None = None,
-    pdf_path: str | None = None,
+    paper_id: str | None = None,
     language: str = "en",
     code_url: str | None = None,
+    abstract: str | None = None,
     today: date | None = None,
     verify_graph: bool = True,
+    lookup: Callable[[str], core.Lookup] = core.lookup,
 ) -> dict:
+    """The agent brings judgement; the metadata (one lookup) and the PDF (the raw layer) are found here."""
     brain = Brain(root)
     schema = brain.schema
     graph_warning = _verify_open_graph(brain.root) if verify_graph else None
+
     errors = []
     if topic not in schema.taxonomy:
         errors.append(f"topic '{topic}' not in taxonomy {schema.taxonomy}")
@@ -89,15 +90,25 @@ def prepare_ingest(
         errors.append(f"language '{language}' not in {schema.values['language']}")
     if verdict not in VERDICTS:
         errors.append(f"verdict must be one of {VERDICTS}")
-    if not (arxiv_id or doi):
-        errors.append("need arxiv_id or doi for document-id")
-    page_title = paper_title(paper_id)
-    if brain.has_page(page_title):
-        errors.append(f"page '{page_title}' already exists")
+    if paper_id:  # a derived one needs the author and year from the lookup
+        paper_id = resolve_paper_id(paper_id, [], None)
+        errors += _taken(brain, paper_id)
     if errors:
         raise SchemaError("; ".join(errors))
 
-    warnings = [graph_warning] if graph_warning else []
+    found = lookup(identifier)
+    if (paper := found.paper) is None:
+        raise SchemaError(f"{identifier} not found on Semantic Scholar or OpenAlex")
+    if not (paper.arxiv_id or paper.doi):
+        errors.append(f"{identifier} has no DOI or arXiv id for document-id")
+    if not paper_id:
+        paper_id = resolve_paper_id(None, paper.authors, paper.year)
+        errors += _taken(brain, paper_id)
+    if errors:
+        raise SchemaError("; ".join(errors))
+    page_title = paper_title(paper_id)
+
+    warnings = ([graph_warning] if graph_warning else []) + found.warnings
     if not 3 <= len(related_pages) <= 5:
         warnings.append(f"AGENTS.md asks for 3-5 related pages, got {len(related_pages)}")
     missing = [p for p in related_pages if not brain.has_page(p)]
@@ -105,10 +116,15 @@ def prepare_ingest(
         warnings.append(f"related pages do not exist: {missing}")
     related_ok = [p for p in related_pages if p not in missing]
 
+    abstract = abstract or paper.abstract or ""
+    if not abstract:
+        warnings.append("no abstract from the sources or the agent; Abstract section left empty")
+
     today = today or date.today()
-    has_pdf = names_pdf(pdf_path)
-    pdf = pdf_path if has_pdf else pdf_name(paper_id, arxiv_id=arxiv_id, doi=doi)
-    pdf_state = f"Present — {pdf_path}" if has_pdf else "not found"
+    ids = dict(arxiv_id=paper.arxiv_id, doi=paper.doi, s2_id=paper.s2_id)
+    pdf_path = brain.find_pdf(paper_id, **ids)
+    pdf = pdf_path or pdf_name(paper_id, **ids)
+    pdf_state = f"Present — {pdf_path}" if pdf_path else "not found"
 
     body = {
         "Abstract": abstract,
@@ -118,18 +134,18 @@ def prepare_ingest(
         "Verification": _bullets(
             [
                 f"**Verdict:** {verdict} — {verdict_reasoning}",
-                f"**Citations:** {citations if citations is not None else 'unknown'}",
-                f"**Venue:** {venue or 'none (preprint)'}",
-                f"**Peer-reviewed:** {'Yes' if peer_reviewed else 'No'}",
-                f"**Semantic Scholar:** {semantic_scholar_url or 'not found'}",
+                f"**Citations:** {'unknown' if paper.citations is None else paper.citations}",
+                f"**Venue:** {paper.venue or 'none (preprint)'}",
+                f"**Peer-reviewed:** {'No' if is_preprint(paper) else 'Yes'}",
+                f"**Semantic Scholar:** {paper.semantic_scholar_url or 'not found'}",
                 f"**PDF:** {pdf_state}",
             ]
         ),
         "Highlights": f"- {highlights_embed(pdf)}",
-        "Local PDF": f"- [{pdf_stem(pdf)}.pdf]({pdf_path})" if has_pdf else "- not found",
+        "Local PDF": f"- [{pdf_stem(pdf)}.pdf]({pdf_path})" if pdf_path else "- not found",
     }
-    parts = [f"# {title}", f"**Authors:** {', '.join(authors)}"]
-    parts.append(f"**Venue:** {venue or 'n/a'}" + (f" ({year})" if year else ""))
+    parts = [f"# {paper.title}", f"**Authors:** {', '.join(paper.authors)}"]
+    parts.append(f"**Venue:** {paper.venue or 'n/a'}" + (f" ({paper.year})" if paper.year else ""))
     if code_url:
         parts.append(f"**Code:** {code_url}")
     for heading in schema.sections:
@@ -138,8 +154,8 @@ def prepare_ingest(
         parts.append(f"## {heading}\n{body.get(heading, '')}")
 
     properties = paper_properties(
-        arxiv_id=arxiv_id,
-        doi=doi,
+        arxiv_id=paper.arxiv_id,
+        doi=paper.doi,
         topic=topic,
         language=language,
         verdict=verdict,
@@ -158,7 +174,7 @@ def prepare_ingest(
             "arguments": {
                 "page_name": p,
                 "mode": "append",
-                "content": f"- See also [[{page_title}]] — {title}",
+                "content": f"- See also [[{page_title}]] — {paper.title}",
             },
         }
         for p in related_ok

@@ -24,7 +24,29 @@ async def test_tool_parameters_are_stable(client):
     tools = {t.name: t.input_schema for t in await client.list_tools()}
     assert set(tools["fetch_pdf"]["properties"]) == {"identifier", "paper_id", "dest_dir"}
     assert tools["trust_check"]["required"] == ["identifier"]
-    assert {"paper_id", "title", "topic", "verdict", "key_points"} <= set(tools["prepare_ingest"]["required"])
+    ingest = tools["prepare_ingest"]
+    assert set(ingest["properties"]) == {
+        "identifier",
+        "paper_id",
+        "topic",
+        "verdict",
+        "verdict_reasoning",
+        "key_points",
+        "relevance",
+        "related_pages",
+        "language",
+        "code_url",
+        "abstract",
+    }
+    assert set(ingest["required"]) == {
+        "identifier",
+        "topic",
+        "verdict",
+        "verdict_reasoning",
+        "key_points",
+        "relevance",
+        "related_pages",
+    }
 
 
 @respx.mock
@@ -61,3 +83,50 @@ async def test_fetch_pdf_tool_saves_into_the_configured_brain(client, make_brain
     result = await client.call_tool("fetch_pdf", {"identifier": "2005.11401", "paper_id": "X"})
     assert result.data["pdf_path_property"] == "../assets/papers/X-2005.11401.pdf"
     assert (brain / "assets" / "papers" / "X-2005.11401.pdf").exists()
+
+
+@respx.mock
+async def test_prepare_ingest_tool_looks_the_paper_up_and_finds_its_pdf(client, make_brain, monkeypatch):
+    brain = make_brain(pages={"Concepts/RAG": "- x"}, assets=["Lewis2020-2005.11401.pdf"])
+    monkeypatch.setenv("SECOND_BRAIN_PATH", str(brain))
+    monkeypatch.delenv("LOGSEQ_API_TOKEN", raising=False)
+    respx.get(f"{sources.S2_API}/paper/ARXIV:2005.11401").respond(
+        json={
+            "paperId": "p1",
+            "title": "Retrieval-Augmented Generation",
+            "year": 2020,
+            "authors": [{"name": "Patrick Lewis", "hIndex": 30}],
+            "venue": "NeurIPS",
+            "externalIds": {"ArXiv": "2005.11401"},
+            "citationCount": 5000,
+            "abstract": "An abstract.",
+        }
+    )
+    respx.get(url__startswith=f"{sources.OPENALEX_API}/works/").respond(
+        json={
+            "is_retracted": False,
+            "cited_by_count": 18,  # split across preprint versions: never the page's citations
+            "primary_location": {"source": {"type": "repository", "display_name": "arXiv"}},
+        }
+    )
+
+    result = await client.call_tool(
+        "prepare_ingest",
+        {
+            "identifier": "2005.11401",
+            "topic": "rag-retrieval",
+            "verdict": "HIGH",
+            "verdict_reasoning": "NeurIPS",
+            "key_points": ["k"],
+            "relevance": "r",
+            "related_pages": ["Concepts/RAG"],
+        },
+    )
+
+    assert result.data["page"] == "Sources/Research/Lewis2020"
+    create = result.data["calls"][0]["arguments"]
+    assert create["properties"]["document-id"] == "arXiv:2005.11401"
+    assert create["properties"]["pdf-path"] == "../assets/papers/Lewis2020-2005.11401.pdf"
+    assert "# Retrieval-Augmented Generation" in create["content"]
+    assert "- **Citations:** 5000" in create["content"] and "An abstract." in create["content"]
+    assert any("LOGSEQ_API_TOKEN" in w for w in result.data["warnings"])

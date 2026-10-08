@@ -4,6 +4,10 @@ from datetime import date
 
 import pytest
 
+from sci_paper_mcp import core
+from sci_paper_mcp.core import Lookup
+from sci_paper_mcp.sources import Paper
+
 AGENTS = """# AGENTS
 ```
 source-type::   paper | book | concept
@@ -42,21 +46,42 @@ PAPER_PROPS = {
 }
 
 
+RAG_PAPER = dict(
+    title="Retrieval-Augmented Generation",
+    authors=["Patrick Lewis", "Ethan Perez"],
+    year=2020,
+    abstract="An abstract.",
+    venue="NeurIPS",
+    arxiv_id="2005.11401",
+    s2_id="p1",
+    citations=5000,
+)
+
+
+def fake_lookup(warnings=(), **fields):
+    """A stand-in for core.lookup that knows one paper: the RAG paper unless `fields` override it."""
+    found = Lookup(
+        Paper(**RAG_PAPER | fields), {"semantic_scholar": "found", "openalex": "found"}, list(warnings)
+    )
+    return lambda identifier: found
+
+
+def no_lookup(identifier):
+    raise AssertionError(f"looked up {identifier}, but bad input must cost no network call")
+
+
 def ingest_args(**kw):
     """Keyword arguments for prepare_ingest: one valid paper, overridable."""
     base = dict(
+        identifier="2005.11401",
         paper_id="RAG-Lewis2020",
-        title="RAG",
-        authors=["P. Lewis"],
         topic="rag-retrieval",
         verdict="HIGH",
         verdict_reasoning="NeurIPS",
-        abstract="abs",
         key_points=["k"],
         relevance="r",
         related_pages=["Concepts/RAG"],
-        arxiv_id="2005.11401",
-        pdf_path="../assets/papers/RAG-Lewis2020-2005.11401.pdf",
+        lookup=fake_lookup(),
         today=date(2026, 1, 2),
     )
     return base | kw
@@ -98,6 +123,11 @@ def apply_calls(root, calls):
                 raise AssertionError(
                     f"mcp-logseq stand-in does not support {call['tool']} {args.get('mode')}"
                 )
+
+
+@pytest.fixture(autouse=True)
+def fresh_lookup_memo():
+    core._memo.clear()
 
 
 @pytest.fixture

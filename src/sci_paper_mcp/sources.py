@@ -44,6 +44,10 @@ class Paper:
     citations_openalex: int | None = None
     openalex_id: str | None = None
 
+    @property
+    def semantic_scholar_url(self) -> str | None:
+        return f"https://www.semanticscholar.org/paper/{self.s2_id}" if self.s2_id else None
+
     def to_dict(self) -> dict:
         return asdict(self)
 

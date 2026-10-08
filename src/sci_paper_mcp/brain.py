@@ -229,3 +229,21 @@ class Brain:
     def has_pdf(self, pdf_path: str) -> bool:
         """Whether a pdf-path property value points at an existing file."""
         return (self.root / "pages" / pdf_path).resolve().exists()
+
+    def find_pdf(
+        self, paper_id: str, *, arxiv_id: str | None = None, doi: str | None = None, s2_id: str | None = None
+    ) -> str | None:
+        """The pdf-path property value of a paper's PDF in the raw layer, else None.
+
+        Looks for `pdf_name(paper_id, ...)` under each of the ids (arXiv id first), case-insensitively:
+        which id names the file depends on which source answered when it was saved, and OpenAlex
+        lowercases DOIs. Only exact names count, so paper id `RAG` never finds `RAG-Lewis2020-….pdf`.
+        """
+        if not self.raw_layer.is_dir():
+            return None
+        present = {f.name.lower(): f.name for f in self.raw_layer.iterdir()}
+        ids = (("arxiv_id", arxiv_id), ("doi", doi), ("s2_id", s2_id))
+        for name in (pdf_name(paper_id, **{kind: value}) for kind, value in ids if value):
+            if found := present.get(name.lower()):
+                return self.pdf_path(found)
+        return None

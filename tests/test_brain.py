@@ -96,10 +96,12 @@ def test_saving_a_pdf_never_overwrites(tmp_path):
 
 def test_a_brain_without_agents_md_can_still_take_a_pdf(tmp_path):
     brain = Brain(tmp_path)
+    assert brain.find_pdf("X", arxiv_id="1") is None  # not even a raw layer yet
     path = save_pdf(brain.raw_layer, "X-1.pdf", lambda: b"%PDF-1")
     assert path == tmp_path / "assets" / "papers" / "X-1.pdf"
     assert brain.pdf_path("X-1.pdf") == "../assets/papers/X-1.pdf"
     assert brain.has_pdf(brain.pdf_path("X-1.pdf"))
+    assert brain.find_pdf("X", arxiv_id="1") == "../assets/papers/X-1.pdf"
     with pytest.raises(SchemaError, match="no schema"):
         schema_of(tmp_path)
 
@@ -129,6 +131,36 @@ def test_the_pdf_of_a_paper_has_one_name(ids, expected):
     assert pdf_name("RAG-Lewis2020", **ids) == expected
 
 
+IDS = {"arxiv_id": "2005.11401", "doi": "10.1/X", "s2_id": "abc"}
+
+
+@pytest.mark.parametrize(
+    "assets,paper_id,expected",
+    [
+        pytest.param(
+            ["RAG-Lewis2020-2005.11401.pdf"], "RAG-Lewis2020", "RAG-Lewis2020-2005.11401.pdf", id="arxiv"
+        ),
+        pytest.param(["RAG-Lewis2020-10.1_X.pdf"], "RAG-Lewis2020", "RAG-Lewis2020-10.1_X.pdf", id="doi"),
+        pytest.param(
+            ["RAG-Lewis2020-10.1_x.pdf"], "RAG-Lewis2020", "RAG-Lewis2020-10.1_x.pdf", id="doi-in-other-case"
+        ),
+        pytest.param(["RAG-Lewis2020-abc.pdf"], "RAG-Lewis2020", "RAG-Lewis2020-abc.pdf", id="s2"),
+        pytest.param(
+            ["RAG-Lewis2020-abc.pdf", "RAG-Lewis2020-10.1_x.pdf", "RAG-Lewis2020-2005.11401.pdf"],
+            "RAG-Lewis2020",
+            "RAG-Lewis2020-2005.11401.pdf",
+            id="arxiv-before-doi-before-s2",
+        ),
+        pytest.param(["RAG-Lewis2020-2005.11401.pdf"], "RAG", None, id="paper-id-is-not-a-prefix"),
+        pytest.param(["RAG-Lewis2020-9999.pdf"], "RAG-Lewis2020", None, id="other-paper"),
+        pytest.param([], "RAG-Lewis2020", None, id="empty-raw-layer"),
+    ],
+)
+def test_a_pdf_is_found_in_the_raw_layer_under_any_of_the_papers_ids(make_brain, assets, paper_id, expected):
+    found = Brain(make_brain(assets=assets)).find_pdf(paper_id, **IDS)
+    assert found == (f"../assets/papers/{expected}" if expected else None)
+
+
 def test_paper_id_is_the_agents_made_file_safe_else_first_author_and_year():
     assert resolve_paper_id("RAG Lewis/2020", [], None) == "RAG_Lewis_2020"
     assert resolve_paper_id(None, ["Patrick Lewis", "B. Other"], 2020) == "Lewis2020"
@@ -144,20 +176,16 @@ def test_highlights_embed_is_read_back_from_a_page():
 
 
 @pytest.mark.parametrize(
-    "assets,pdf_path",
+    "assets",
     [
-        pytest.param(
-            ["RAG-Lewis2020-2005.11401.pdf"],
-            "../assets/papers/RAG-Lewis2020-2005.11401.pdf",
-            id="pdf-in-raw-layer",
-        ),
-        pytest.param([], None, id="pdf-not-found"),
+        pytest.param(["RAG-Lewis2020-2005.11401.pdf"], id="pdf-in-raw-layer"),
+        pytest.param([], id="pdf-not-found"),
     ],
 )
-def test_a_page_written_by_prepare_ingest_passes_lint(make_brain, assets, pdf_path):
+def test_a_page_written_by_prepare_ingest_passes_lint(make_brain, assets):
     """Writer and checker agree on the paper-page format: only 'no highlights yet' is left to do."""
     brain = make_brain(pages={"Concepts/RAG": "- x"}, assets=assets)
-    result = prepare_ingest(brain, **ingest_args(pdf_path=pdf_path), verify_graph=False)
+    result = prepare_ingest(brain, **ingest_args(), verify_graph=False)
     apply_calls(brain, result["calls"])
 
     findings = lint(brain, today=TODAY)["findings"]
