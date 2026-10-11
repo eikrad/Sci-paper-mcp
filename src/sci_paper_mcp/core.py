@@ -8,12 +8,13 @@ from typing import Literal
 
 import httpx
 
-from . import config, sources
+from . import config, sources, untrusted
 from .brain import Brain, pdf_name, resolve_paper_id, save_pdf
 from .sources import Paper
 from .verdict import is_preprint, propose_verdict
 
 UNPAYWALL_API = "https://api.unpaywall.org/v2"
+MAX_PDF_BYTES = 100 * 2**20  # far above any paper; stops a hostile link from filling memory or disk
 
 _PRIORITY = {"semantic_scholar": 0, "openalex": 1, "arxiv": 2}  # richest metadata first
 
@@ -66,10 +67,17 @@ def search_papers(
             found += searchers[name](query, limit)
         except httpx.HTTPError as e:  # one source down must not kill the search
             errors.append(f"{name}: {e}")
-    results = [p.to_dict() for p in _dedupe(found)[:limit]]
-    if errors and not results:
+    papers = _dedupe(found)[:limit]
+    if errors and not papers:
         raise RuntimeError("; ".join(errors))
-    return {"results": results, "warnings": errors}
+    flags = []
+    for i, p in enumerate(papers, 1):
+        p.title, w = untrusted.scrub(f"result {i} title", p.title)
+        flags += w
+        if p.abstract:
+            p.abstract, w = untrusted.scrub(f"result {i} abstract", p.abstract)
+            flags += w
+    return {"results": [p.to_dict() for p in papers], "warnings": errors + flags}
 
 
 Outcome = Literal["found", "not_found", "failed", "skipped"]
@@ -161,12 +169,13 @@ def trust_check(identifier: str) -> dict:
     verdict, reasons = propose_verdict(p)
     if p.retracted is None:
         reasons.append(f"retraction status unknown ({_RETRACTION_GAP[found.outcomes['openalex']]})")
+    title, title_flags = untrusted.scrub("title", p.title)
     return {
         "verdict": verdict,
         "reasons": reasons,
-        "warnings": found.warnings,
+        "warnings": found.warnings + title_flags,
         "found": True,
-        "title": p.title or None,
+        "title": title or None,
         "year": p.year,
         "venue": p.venue,
         "peer_reviewed": not is_preprint(p),
@@ -210,12 +219,20 @@ def _pdf_url(p: Paper) -> str:
 
 
 def _download_pdf(url: str) -> bytes:
-    with httpx.Client(timeout=60, follow_redirects=True) as c:
-        r = c.get(url)
+    """The PDF at `url`, read only up to MAX_PDF_BYTES: the link comes from a third party."""
+    too_big = RuntimeError(f"{url} is larger than {MAX_PDF_BYTES // 2**20} MB; not saved")
+    with httpx.Client(timeout=60, follow_redirects=True) as c, c.stream("GET", url) as r:
         r.raise_for_status()
-    if not r.content.startswith(b"%PDF"):
+        if int(r.headers.get("Content-Length") or 0) > MAX_PDF_BYTES:
+            raise too_big
+        content = bytearray()
+        for chunk in r.iter_bytes():
+            content += chunk
+            if len(content) > MAX_PDF_BYTES:
+                raise too_big
+    if not content.startswith(b"%PDF"):
         raise RuntimeError(f"{url} did not return a PDF")
-    return r.content
+    return bytes(content)
 
 
 def fetch_pdf(
