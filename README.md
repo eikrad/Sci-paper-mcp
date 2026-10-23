@@ -113,6 +113,8 @@ Fixes:
   journal DOI first, the arXiv DOI second.
 - The highlights embed of a paper ingested before its PDF now matches the PDF name for DOI-only papers and old-style arXiv ids.
 - Search and `trust_check` results carry the OpenAlex signals (`retracted`, `source_type`, ...).
+- certifi 2026.10.23: HTTPS requests no longer trust the eMudhra roots whose intermediate CAs were compromised in
+  October 2026.
 
 ### v0.1.0
 
