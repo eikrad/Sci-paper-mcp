@@ -12,4 +12,4 @@ The agent picks the passages (0001); the server only checks that each is in the 
 
 PDFs are read with pypdfium2 (Apache-2.0 / BSD-3-Clause). PyMuPDF has a richer search API but is AGPL-3.0, which does not fit this Apache-2.0 repository; the matching has to be our own anyway, because no library treats quote styles and dropped citations alike.
 
-Not verified: whether Logseq draws the edn on a PDF it has never opened before without a restart. Positions are in PDF points from the crop box's top-left corner, the convention of the existing second-brain edn files (within 1–2 pt on the 476 passages). Rotated pages are not handled.
+Checked by eye on 2026-11-13: Logseq 0.10.15 draws the seven MCPGuard-Xing2025 highlights on the PDF. Positions are in PDF points from the crop box's top-left corner, the convention of the existing second-brain edn files (within 1–2 pt on the 476 passages). Rotated pages are not handled.
