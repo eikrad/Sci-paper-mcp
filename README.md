@@ -92,6 +92,10 @@ Releases are cut by release-please from those prefixes; see [docs/releasing.md](
 
 ### Unreleased
 
+**Changed:** `prepare_ingest` writes the paper's publication date to `date::` (the earliest date arXiv, Semantic
+Scholar or OpenAlex reports, i.e. the first public version), no longer the ingest day, which the Log records. `lint`
+now measures a `needs-update` page's age from its latest Log entry.
+
 New: `prepare_highlights` turns passages the agent picked from a paper's PDF into Logseq PDF highlights
 ([ADR 0009](docs/adr/0009-prepare-highlights-writes-the-edn.md)). It writes `assets/<pdf-stem>.edn` and returns the
 `hls__` page for `mcp-logseq`; machine-picked highlights are blue by default. On the 476 passages generated for

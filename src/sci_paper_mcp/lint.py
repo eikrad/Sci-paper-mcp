@@ -42,6 +42,23 @@ def _parse_date(value: str | None) -> date | None:
         return None
 
 
+_LOG_ENTRY = re.compile(r"##\s+\[(\d{4}-\d{2}-\d{2})\][^|\n]*\|\s*([^\n]+)")
+
+
+def _last_logged(log: str) -> dict[str, date]:
+    """The latest Log entry date per page title (lower-cased, as Logseq compares names).
+
+    date:: is a paper's publication date, so a page's age comes from the Log, which records each
+    ingest, lint fix and query that touched it.
+    """
+    latest: dict[str, date] = {}
+    for day, title in _LOG_ENTRY.findall(log):
+        if (d := _parse_date(day)) is not None:
+            key = title.strip().lower()
+            latest[key] = max(d, latest.get(key, d))
+    return latest
+
+
 def _related(text: str) -> list[str]:
     """`[[links]]` inside the '## Related Pages' section."""
     m = re.search(r"##\s+Related Pages\s*\n(.*?)(?=\n\s*(?:-\s+)?##\s|\Z)", text, re.S)
@@ -53,6 +70,7 @@ def lint(root: Path | None, today: date | None = None) -> dict:
     brain = Brain(root)
     schema = brain.schema
     pages = brain.pages()
+    last_logged = _last_logged(pages.get("Log", ""))
     findings: list[dict] = []
 
     def add(check: str, page: str, message: str, severity: str = "error") -> None:
@@ -110,10 +128,15 @@ def lint(root: Path | None, today: date | None = None) -> dict:
         for hls in embedded_highlights(text):
             if "ls-type:: annotation" not in pages.get(hls, ""):
                 add("highlights", title, f"no highlights yet on {hls} (PDF not annotated)", "todo")
-        if props.get("status") == "needs-update" and (d := _parse_date(props.get("date"))):
+        if props.get("status") == "needs-update" and (d := last_logged.get(title.lower())):
             age = (today - d).days
             if age > STALE_DAYS:
-                add("stale", title, f"status needs-update for {age} days (limit {STALE_DAYS})", "warning")
+                add(
+                    "stale",
+                    title,
+                    f"status needs-update and no Log entry for {age} days (limit {STALE_DAYS})",
+                    "warning",
+                )
         if index_queries and not any(all(props.get(k) == v for k, v in q.items()) for q in index_queries):
             add(
                 "index",
