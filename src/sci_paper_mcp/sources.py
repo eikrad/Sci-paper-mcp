@@ -14,7 +14,10 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 S2_API = "https://api.semanticscholar.org/graph/v1"
 OPENALEX_API = "https://api.openalex.org"
 ATOM = {"a": "http://www.w3.org/2005/Atom"}
-S2_FIELDS = "title,abstract,year,authors,venue,externalIds,citationCount,openAccessPdf,publicationTypes"
+S2_FIELDS = (
+    "title,abstract,year,publicationDate,authors,venue,externalIds,"
+    "citationCount,openAccessPdf,publicationTypes"
+)
 S2_PAPER_FIELDS = f"{S2_FIELDS},influentialCitationCount,authors.hIndex"
 _ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(v\d+)?$|[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
 
@@ -26,6 +29,7 @@ class Paper:
     title: str
     authors: list[str]
     year: int | None = None
+    published: str | None = None  # YYYY-MM-DD; the earliest public version once merged
     abstract: str | None = None
     venue: str | None = None
     doi: str | None = None
@@ -124,6 +128,7 @@ def search_arxiv(query: str, limit: int) -> list[Paper]:
                 title=" ".join(e.findtext("a:title", "", ATOM).split()),
                 authors=[a.findtext("a:name", "", ATOM) for a in e.findall("a:author", ATOM)],
                 year=int(published[:4]) if published else None,
+                published=published[:10] or None,
                 abstract=" ".join(e.findtext("a:summary", "", ATOM).split()) or None,
                 doi=doi.text if doi is not None else None,
                 arxiv_id=arxiv_id,
@@ -142,6 +147,7 @@ def _from_s2(d: dict) -> Paper:
         title=d.get("title") or "",
         authors=[a.get("name", "") for a in authors],
         year=d.get("year"),
+        published=d.get("publicationDate"),
         abstract=d.get("abstract"),
         venue=(d.get("venue") or "").strip() or None,
         doi=ids.get("DOI"),
@@ -177,7 +183,7 @@ def get_s2_paper(ident: Identifier) -> Paper:
 
 
 OPENALEX_FIELDS = (
-    "id,doi,display_name,publication_year,is_retracted,authorships,primary_location,"
+    "id,doi,display_name,publication_year,publication_date,is_retracted,authorships,primary_location,"
     "best_oa_location,cited_by_count,abstract_inverted_index"
 )
 _ARXIV_DATACITE = re.compile(r"^10\.48550/arxiv\.(.+)$", re.I)
@@ -221,6 +227,7 @@ def _from_openalex(w: dict) -> Paper:
         title=w.get("display_name") or "",
         authors=[(a.get("author") or {}).get("display_name", "") for a in w.get("authorships") or []],
         year=w.get("publication_year"),
+        published=w.get("publication_date"),
         abstract=_abstract_from_index(w.get("abstract_inverted_index")),
         venue=None if is_repository else source.get("display_name"),
         doi=doi,

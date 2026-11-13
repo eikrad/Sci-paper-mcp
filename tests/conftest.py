@@ -51,6 +51,7 @@ RAG_PAPER = dict(
     title="Retrieval-Augmented Generation",
     authors=["Patrick Lewis", "Ethan Perez"],
     year=2020,
+    published="2020-05-22",
     abstract="An abstract.",
     venue="NeurIPS",
     arxiv_id="2005.11401",

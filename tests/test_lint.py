@@ -96,21 +96,31 @@ def test_annotated_highlights_are_not_reported(make_brain):
     assert findings(brain, "highlights") == []
 
 
-def test_needs_update_older_than_60_days_is_stale(make_brain):
-    old = paper_page({"status": "needs-update", "date": "2026-07-01"})
-    brain = make_brain(
-        pages={"Sources/Research/X": old, "Concepts/Y": "- [[Sources/Research/X]]"},
+def _log(*entries):
+    """A Log page: one `## [date] op | title` entry per (date, op, title)."""
+    return "".join(f"- ## [{d}] {op} | {title}\n\t- x\n" for d, op, title in entries)
+
+
+def _needs_update_brain(make_brain, *log):
+    # an old paper: date:: is its publication date, so it says nothing about the page's age
+    page = paper_page({"status": "needs-update", "date": "2020-05-22"})
+    return make_brain(
+        pages={"Sources/Research/X": page, "Concepts/Y": "- [[Sources/Research/X]]", "Log": _log(*log)},
         assets=["RAG-Lewis2020-2005.11401.pdf"],
     )
+
+
+def test_needs_update_with_no_log_entry_for_60_days_is_stale(make_brain):
+    brain = _needs_update_brain(make_brain, ("2026-07-01", "ingest", "Sources/Research/X"))
     [f] = findings(brain, "stale")
     assert "99 days" in f["message"]
 
 
-def test_needs_update_within_60_days_is_fine(make_brain):
-    fresh = paper_page({"status": "needs-update", "date": "2026-09-20"})
-    brain = make_brain(
-        pages={"Sources/Research/X": fresh, "Concepts/Y": "- [[Sources/Research/X]]"},
-        assets=["RAG-Lewis2020-2005.11401.pdf"],
+def test_needs_update_with_a_recent_log_entry_is_fine(make_brain):
+    brain = _needs_update_brain(
+        make_brain,
+        ("2026-07-01", "ingest", "Sources/Research/X"),
+        ("2026-09-20", "lint", "Sources/Research/X"),
     )
     assert findings(brain, "stale") == []
 

@@ -71,6 +71,8 @@ def prepare_ingest(
         raise SchemaError(f"{identifier} not found on Semantic Scholar or OpenAlex")
     if not (paper.arxiv_id or paper.doi):
         errors.append(f"{identifier} has no DOI or arXiv id for document-id")
+    if not (paper.published or paper.year):
+        errors.append(f"{identifier} has no publication date or year for date::")
     if not paper_id:
         paper_id = resolve_paper_id(None, paper.authors, paper.year)
         errors += _taken(brain, paper_id)
@@ -79,6 +81,10 @@ def prepare_ingest(
     page_title = paper_title(paper_id)
 
     warnings = ([graph_warning] if graph_warning else []) + found.warnings
+    # date:: is the publication date, the earliest public version (AGENTS.md); the Log keeps the ingest day
+    published = paper.published or f"{paper.year}-01-01"
+    if not paper.published:
+        warnings.append(f"no publication date from the sources; date:: set to {published} from the year")
     if not 3 <= len(related_pages) <= 5:
         warnings.append(f"AGENTS.md asks for 3-5 related pages, got {len(related_pages)}")
     missing = [p for p in related_pages if not brain.has_page(p)]
@@ -131,7 +137,7 @@ def prepare_ingest(
         topic=topic,
         language=language,
         verdict=verdict,
-        date=today.isoformat(),
+        date=published,
         pdf_path=pdf_path,
     )
     calls = [

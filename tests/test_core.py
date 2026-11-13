@@ -636,3 +636,27 @@ def test_trust_check_returns_the_title_without_hidden_text():
     _oa(404)
     r = core.trust_check("10.1/x")
     assert r["title"] == "T" and any("title" in w and "invisible" in w for w in r["warnings"])
+
+
+@respx.mock
+def test_lookup_keeps_the_earliest_publication_date_any_source_reports():
+    # S2 dates the venue version; OpenAlex knows the arXiv v1 date: the earliest public version wins
+    respx.get(f"{sources.S2_API}/paper/ARXIV:2005.11401").respond(
+        json={
+            "paperId": "p1",
+            "title": "RAG",
+            "year": 2020,
+            "publicationDate": "2020-12-06",
+            "authors": [{"name": "Patrick Lewis"}],
+            "externalIds": {"ArXiv": "2005.11401"},
+        }
+    )
+    _oa(200, **(ARXIV_WORK | {"publication_date": "2020-05-22", "publication_year": 2020}))
+    assert core.lookup("2005.11401").paper.published == "2020-05-22"
+
+
+@respx.mock
+def test_arxiv_search_hits_carry_their_first_version_date():
+    respx.get(sources.ARXIV_API).respond(text=ATOM)
+    [hit] = sources.search_arxiv("rag", 1)
+    assert hit.published == "2020-05-22"

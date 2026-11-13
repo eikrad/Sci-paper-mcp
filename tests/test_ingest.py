@@ -269,3 +269,19 @@ def test_rejected_token_warns_with_hint(brain, logseq_env):
     respx.post(f"{LOGSEQ}/api").respond(401)
     r = prepare_ingest(brain, **args())
     assert any("could not verify" in w and "401" in w for w in r["warnings"])
+
+
+def test_date_is_the_publication_date_not_the_ingest_day(brain):
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(published="2020-05-22")))
+    assert create_args(r)["properties"]["date"] == "2020-05-22"
+
+
+def test_a_paper_known_only_by_year_is_dated_to_its_first_day_with_a_warning(brain):
+    r = prepare_ingest(brain, **args(lookup=fake_lookup(published=None)))
+    assert create_args(r)["properties"]["date"] == "2020-01-01"
+    assert any("publication date" in w for w in r["warnings"])
+
+
+def test_a_paper_without_any_date_is_refused(brain):
+    with pytest.raises(SchemaError, match="publication date"):
+        prepare_ingest(brain, **args(lookup=fake_lookup(published=None, year=None)))
