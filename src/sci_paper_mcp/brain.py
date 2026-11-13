@@ -94,9 +94,14 @@ def parse_properties(text: str) -> dict[str, str]:
     return props
 
 
+def highlights_title(pdf: str) -> str:
+    """The highlights page Logseq keeps for a PDF (a pdf-path value or file name)."""
+    return f"{_HIGHLIGHTS}{pdf_stem(pdf)}"
+
+
 def highlights_embed(pdf: str) -> str:
     """The block that embeds the highlights page Logseq keeps for a PDF (a pdf-path value or file name)."""
-    return f"{{{{embed [[{_HIGHLIGHTS}{pdf_stem(pdf)}]]}}}}"
+    return f"{{{{embed [[{highlights_title(pdf)}]]}}}}"
 
 
 def embedded_highlights(text: str) -> list[str]:
@@ -246,7 +251,15 @@ class Brain:
 
     def has_pdf(self, pdf_path: str) -> bool:
         """Whether a pdf-path property value points at an existing file."""
-        return (self.root / "pages" / pdf_path).resolve().exists()
+        return self.pdf_file(pdf_path).exists()
+
+    def pdf_file(self, pdf_path: str) -> Path:
+        """The file a pdf-path property value (relative to `pages/`) points at."""
+        return (self.root / "pages" / pdf_path).resolve()
+
+    def highlights_file(self, pdf: str) -> Path:
+        """Where Logseq keeps a PDF's highlight positions: `assets/<pdf-stem>.edn`, beside the raw layer."""
+        return self.root / "assets" / f"{pdf_stem(pdf)}.edn"
 
     def find_pdf(
         self, paper_id: str, *, arxiv_id: str | None = None, doi: str | None = None, s2_id: str | None = None
