@@ -97,8 +97,9 @@ def prepare_highlights(paper_id: str, passages: list[str], color: str = "blue") 
     page, e.g. 'RAG-Lewis2020' for Sources/Research/RAG-Lewis2020, whose pdf-path gives the PDF.
 
     Writes assets/<pdf-stem>.edn (the highlight positions Logseq's PDF viewer draws) and returns
-    `calls` for mcp-logseq: create_page for hls__<pdf-stem> (one block per highlight, its id matching
-    the edn) and the Log entry. `rejected` lists passages not found, with the reason; a paper that has
+    `calls` for mcp-logseq: the hls__<pdf-stem> page (one block per highlight, its id matching the
+    edn; update_page in replace mode when a paper page already embeds it, else create_page) and the Log
+    entry. `rejected` lists passages not found, with the reason; a paper that has
     highlights is refused, so a rejected passage cannot be added later by this tool. color is one of
     yellow, red, green, blue, purple; blue marks machine-picked highlights.
 

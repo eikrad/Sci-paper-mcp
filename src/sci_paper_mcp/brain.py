@@ -241,6 +241,15 @@ class Brain:
     def has_page(self, title: str) -> bool:
         return self._file(title) is not None
 
+    def is_linked(self, title: str) -> bool:
+        """Whether any page links to `title` (Logseq page names ignore case).
+
+        Logseq then has the page even without a file, e.g. the hls__ page a paper page embeds, and
+        mcp-logseq's create_page refuses it.
+        """
+        link = f"[[{title}]]".lower()
+        return any(link in text.lower() for text in self.pages().values())
+
     @property
     def raw_layer(self) -> Path:
         return self.root / _RAW

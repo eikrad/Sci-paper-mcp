@@ -248,15 +248,19 @@ def prepare_highlights(
         return result | {"calls": [], "next": "No passage was found, so nothing was written."}
     edn_file.write_text(_edn({"highlights": stored, "extra": {"page": 1}}) + "\n")
     today = today or date.today()
+    page = {
+        "properties": {"file": f"[{pdf_stem(pdf)}.pdf]({pdf})", "file-path": pdf},
+        "content": "\n".join(blocks),
+    }
+    # A page that a paper page embeds exists in Logseq without a file: create_page refuses it, and an
+    # append would put the page properties on the first block. Replace writes them at the top.
+    page_call = (
+        {"tool": "update_page", "arguments": {"page_name": hls, "mode": "replace"} | page}
+        if brain.is_linked(hls)
+        else {"tool": "create_page", "arguments": {"title": hls} | page}
+    )
     calls = [
-        {
-            "tool": "create_page",
-            "arguments": {
-                "title": hls,
-                "properties": {"file": f"[{pdf_stem(pdf)}.pdf]({pdf})", "file-path": pdf},
-                "content": "\n".join(blocks),
-            },
-        },
+        page_call,
         {
             "tool": "update_page",
             "arguments": {

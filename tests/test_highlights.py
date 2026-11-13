@@ -3,11 +3,12 @@ from datetime import date
 import edn_format
 import pytest
 import respx
-from conftest import page_file, paper_page, write_pdf
+from conftest import apply_calls, page_file, paper_page, write_pdf
 from pytest import approx
 
 from sci_paper_mcp.brain import SchemaError
 from sci_paper_mcp.highlights import prepare_highlights
+from sci_paper_mcp.lint import lint
 
 STEM = "RAG-Lewis2020-2005.11401"
 PASSAGE = "Retrieval helps language models stay factual."
@@ -207,3 +208,33 @@ def test_another_open_graph_is_refused_before_the_edn_is_written(brain, monkeypa
     with pytest.raises(SchemaError, match="wrong graph"):
         highlight(brain, [PASSAGE], verify_graph=True)
     assert not (brain / "assets" / f"{STEM}.edn").exists()
+
+
+# --- the hls__ page as Logseq has it: a paper page that embeds it makes it exist without a file -------
+
+
+def test_a_highlights_page_the_paper_embeds_is_filled_in_and_clears_the_lint_todo(make_brain):
+    embed = f"- # RAG\n\t- ## Highlights\n\t\t- {{{{embed [[hls__{STEM}]]}}}}\n"
+    root = make_brain(pages={"Sources/Research/RAG-Lewis2020": paper_page(body=embed)})
+    write_pdf(pdf(root), [[(72, 700, PASSAGE)]])
+    assert any(f["check"] == "highlights" for f in lint(root)["findings"])
+
+    r = highlight(root, [PASSAGE])
+
+    page_call = r["calls"][0]
+    assert page_call["tool"] == "update_page"
+    assert (page_call["arguments"]["page_name"], page_call["arguments"]["mode"]) == (
+        f"hls__{STEM}",
+        "replace",
+    )
+    apply_calls(root, r["calls"])
+    assert not any(f["check"] == "highlights" for f in lint(root)["findings"])
+    text = page_file(root, f"hls__{STEM}").read_text()
+    assert text.startswith(f"file:: [{STEM}.pdf]") and f"id:: {r['highlights'][0]['id']}" in text
+
+
+def test_a_highlights_page_nothing_links_to_is_created(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    r = highlight(brain, [PASSAGE])
+    apply_calls(brain, r["calls"])
+    assert "ls-type:: annotation" in page_file(brain, f"hls__{STEM}").read_text()
