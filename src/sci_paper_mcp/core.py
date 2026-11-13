@@ -28,13 +28,18 @@ def _missing(value) -> bool:
 
 
 def _merge(papers: list[Paper]) -> Paper:
-    """The richest source wins; lower ones fill every field it leaves unknown."""
+    """The richest source wins; lower ones fill every field it leaves unknown.
+
+    Except the publication date: the earliest any source reports, since sources date different
+    versions (arXiv v1, first online, the venue's issue) and the brain wants the first public one.
+    """
     winner, *rest = sorted(papers, key=_rank)
     merged = replace(winner)
     for p in rest:
         for f in fields(Paper):
             if _missing(getattr(merged, f.name)):
                 setattr(merged, f.name, getattr(p, f.name))
+    merged.published = min((p.published for p in papers if p.published), default=None)
     return merged
 
 
