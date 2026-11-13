@@ -16,6 +16,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 
 from .brain import Brain, SchemaError, highlights_title, names_pdf, paper_title, parse_properties, pdf_stem
+from .logseq import verify_open_graph
 
 Box = tuple[float, float, float, float]  # x1, y1, x2, y2 from the page's top-left corner, in PDF points
 
@@ -190,11 +191,13 @@ def prepare_highlights(
     passages: list[str],
     color: str = "blue",
     today: date | None = None,
+    verify_graph: bool = True,
 ) -> dict:
     """Locate each passage in the paper's PDF, write the highlight file, return the hls__ page calls.
 
     Only papers without highlights are touched: an existing edn or hls__ page is refused, since Logseq
-    may hold the edn in memory and overwrite it. Nothing is written when no passage is found.
+    may hold the edn in memory and overwrite it. Nothing is written when no passage is found, nor when
+    Logseq has another graph open (ADR 0006): the hls__ page must land in the brain the edn is in.
     """
     if not passages:
         raise SchemaError("give at least one passage")
@@ -211,9 +214,11 @@ def prepare_highlights(
     hls, edn_file = highlights_title(pdf), brain.highlights_file(pdf)
     if edn_file.exists() or brain.has_page(hls):
         raise SchemaError(f"'{title}' already has highlights ({hls}); they are left alone")
+    graph_warning = verify_open_graph(brain.root) if verify_graph else None
 
     pages = _read(brain.pdf_file(pdf))
-    found, rejected, stored, blocks, warnings = [], [], [], [], []
+    found, rejected, stored, blocks = [], [], [], []
+    warnings = [graph_warning] if graph_warning else []
     for passage in passages:
         text = " ".join(passage.split())
         key, hits = _locate(pages, text)

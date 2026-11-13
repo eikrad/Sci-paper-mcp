@@ -7,4 +7,5 @@
 - **Wiki layer** — `pages/` in the brain. Written by the agent through `mcp-logseq`, never by this server.
 - **PAPER-ID** — page and PDF stem such as `RAG-Lewis2020`. The agent may supply it; otherwise the server derives `<FirstAuthor><Year>`.
 - **Ingest** — turning a paper into a brain page: trust check, PDF, page, backlinks, log entry. This server only prepares it (`prepare_ingest`).
+- **Highlight** — a passage marked in a paper's PDF. Logseq keeps its position in `assets/<pdf-stem>.edn` and a block with the same uuid on the `hls__<pdf-stem>` page. `prepare_highlights` places passages the agent picked (ADR 0009); hand-made ones come from Logseq's PDF viewer.
 - **Lint** — read-only, mechanical health check of the brain. Judgement calls (contradictions, concept gaps) stay with the agent.

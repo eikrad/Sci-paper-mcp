@@ -3,6 +3,7 @@
 import httpx
 import pytest
 import respx
+from conftest import paper_page, write_pdf
 from fastmcp import Client
 
 from sci_paper_mcp import sources
@@ -17,7 +18,14 @@ async def client():
 
 async def test_tool_names_are_stable(client):
     names = {t.name for t in await client.list_tools()}
-    assert names == {"search_papers", "trust_check", "fetch_pdf", "prepare_ingest", "lint"}
+    assert names == {
+        "search_papers",
+        "trust_check",
+        "fetch_pdf",
+        "prepare_ingest",
+        "prepare_highlights",
+        "lint",
+    }
 
 
 async def test_tool_parameters_are_stable(client):
@@ -39,6 +47,10 @@ async def test_tool_parameters_are_stable(client):
         "code_url",
         "abstract",
     }
+    highlights = tools["prepare_highlights"]
+    # no path or file name: the PDF and the edn are found from the paper page
+    assert set(highlights["properties"]) == {"paper_id", "passages", "color"}
+    assert set(highlights["required"]) == {"paper_id", "passages"}
     assert set(ingest["required"]) == {
         "identifier",
         "topic",
@@ -130,4 +142,22 @@ async def test_prepare_ingest_tool_looks_the_paper_up_and_finds_its_pdf(client, 
     assert create["properties"]["pdf-path"] == "../assets/papers/Lewis2020-2005.11401.pdf"
     assert "# Retrieval-Augmented Generation" in create["content"]
     assert "- **Citations:** 5000" in create["content"] and "An abstract." in create["content"]
+    assert any("LOGSEQ_API_TOKEN" in w for w in result.data["warnings"])
+
+
+async def test_prepare_highlights_tool_writes_the_edn_and_returns_the_page(client, make_brain, monkeypatch):
+    brain = make_brain(pages={"Sources/Research/RAG-Lewis2020": paper_page()})
+    write_pdf(brain / "assets" / "papers" / "RAG-Lewis2020-2005.11401.pdf", [[(72, 700, "A passage.")]])
+    monkeypatch.setenv("SECOND_BRAIN_PATH", str(brain))
+    monkeypatch.delenv("LOGSEQ_API_TOKEN", raising=False)
+
+    result = await client.call_tool(
+        "prepare_highlights", {"paper_id": "RAG-Lewis2020", "passages": ["A passage.", "Not there."]}
+    )
+
+    assert [h["text"] for h in result.data["highlights"]] == ["A passage."]
+    assert [r["passage"] for r in result.data["rejected"]] == ["Not there."]
+    assert result.data["calls"][0]["arguments"]["title"] == "hls__RAG-Lewis2020-2005.11401"
+    assert "hl-color:: blue" in result.data["calls"][0]["arguments"]["content"]
+    assert (brain / "assets" / "RAG-Lewis2020-2005.11401.edn").exists()
     assert any("LOGSEQ_API_TOKEN" in w for w in result.data["warnings"])

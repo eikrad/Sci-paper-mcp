@@ -3,6 +3,7 @@
 from datetime import date
 
 import pytest
+from reportlab.pdfgen import canvas
 
 from sci_paper_mcp import core
 from sci_paper_mcp.core import Lookup
@@ -123,6 +124,17 @@ def apply_calls(root, calls):
                 raise AssertionError(
                     f"mcp-logseq stand-in does not support {call['tool']} {args.get('mode')}"
                 )
+
+
+def write_pdf(path, pages, size=(612, 792)):
+    """A text PDF: `pages` is a list of pages, each a list of (x, baseline_y, text) lines in PDF points."""
+    c = canvas.Canvas(str(path), pagesize=size)
+    for lines in pages:
+        c.setFont("Helvetica", 12)
+        for x, y, text in lines:
+            c.drawString(x, y, text)
+        c.showPage()
+    c.save()
 
 
 @pytest.fixture(autouse=True)

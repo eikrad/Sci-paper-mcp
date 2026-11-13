@@ -43,9 +43,11 @@ verified live (see v0.1.0 below).
 | `trust_check` | Proposes HIGH/MEDIUM/LOW with reasons; merges Semantic Scholar and OpenAlex |
 | `fetch_pdf` | Saves `assets/papers/<PAPER-ID>-<id>.pdf`, never overwrites. PDF from arXiv, Semantic Scholar, OpenAlex or Unpaywall |
 | `prepare_ingest` | Takes the paper's identifier plus your judgement (topic, verdict, key points, relevance, related pages), looks up the metadata and finds the PDF in `assets/papers/` itself, validates against the brain's `AGENTS.md` and returns `create_page`/`update_page` calls for `mcp-logseq`. Writes nothing |
+| `prepare_highlights` | Takes passages you picked from a paper's PDF, checks each is in the PDF (ignoring line breaks, hyphenation, quote style and case), writes `assets/<pdf-stem>.edn` with their positions and returns the `hls__` page call for `mcp-logseq`. Only for papers without highlights |
 | `lint` | Read-only health check of the brain |
 
-Pages are written by the agent through `mcp-logseq`; this server only reads the graph and writes PDFs.
+Pages are written by the agent through `mcp-logseq`; this server only reads the graph and writes PDFs and highlight
+positions (`assets/*.edn`, which `mcp-logseq` cannot write).
 
 A typical ingest: `trust_check` → `fetch_pdf` → `prepare_ingest` with the same identifier (and the same
 `paper_id`, if you choose one) → apply the returned `calls` with `mcp-logseq`. The paper is looked up once
@@ -89,6 +91,11 @@ Releases are cut by release-please from those prefixes; see [docs/releasing.md](
 ## Releases
 
 ### Unreleased
+
+New: `prepare_highlights` turns passages the agent picked from a paper's PDF into Logseq PDF highlights
+([ADR 0009](docs/adr/0009-prepare-highlights-writes-the-edn.md)). It writes `assets/<pdf-stem>.edn` and returns the
+`hls__` page for `mcp-logseq`; machine-picked highlights are blue by default. On the 476 passages generated for
+second-brain earlier it places all 476. New dependency: `pypdfium2`.
 
 **Breaking:** `prepare_ingest` takes the paper's `identifier` (DOI, arXiv id or S2 id) instead of copied metadata. The server
 looks up title, authors, venue, year, citations, ids, the Semantic Scholar link and peer-review status itself and finds the

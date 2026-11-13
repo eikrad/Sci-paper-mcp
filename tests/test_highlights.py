@@ -2,26 +2,15 @@ from datetime import date
 
 import edn_format
 import pytest
-from conftest import page_file, paper_page
+import respx
+from conftest import page_file, paper_page, write_pdf
 from pytest import approx
-from reportlab.pdfgen import canvas
 
 from sci_paper_mcp.brain import SchemaError
 from sci_paper_mcp.highlights import prepare_highlights
 
 STEM = "RAG-Lewis2020-2005.11401"
 PASSAGE = "Retrieval helps language models stay factual."
-
-
-def write_pdf(path, pages, size=(612, 792)):
-    """A text PDF: `pages` is a list of pages, each a list of (x, baseline_y, text) lines in PDF points."""
-    c = canvas.Canvas(str(path), pagesize=size)
-    for lines in pages:
-        c.setFont("Helvetica", 12)
-        for x, y, text in lines:
-            c.drawString(x, y, text)
-        c.showPage()
-    c.save()
 
 
 def read_edn(path):
@@ -60,7 +49,11 @@ def pdf(brain):
 
 def highlight(brain, passages, **kw):
     return prepare_highlights(
-        brain, paper_id="RAG-Lewis2020", passages=passages, today=date(2026, 1, 2), **kw
+        brain,
+        paper_id="RAG-Lewis2020",
+        passages=passages,
+        today=date(2026, 1, 2),
+        **({"verify_graph": False} | kw),
     )
 
 
@@ -167,7 +160,7 @@ def test_a_paper_with_a_highlights_page_but_no_edn_is_left_alone(brain):
 def test_a_paper_without_a_pdf_is_refused(make_brain):
     root = make_brain(pages={"Sources/Research/RAG-Lewis2020": paper_page({"pdf-path": "not-found"})})
     with pytest.raises(SchemaError, match="no PDF"):
-        prepare_highlights(root, paper_id="RAG-Lewis2020", passages=[PASSAGE])
+        prepare_highlights(root, paper_id="RAG-Lewis2020", passages=[PASSAGE], verify_graph=False)
 
 
 @pytest.mark.parametrize(
@@ -181,7 +174,9 @@ def test_a_paper_without_a_pdf_is_refused(make_brain):
 def test_bad_input_is_refused_before_anything_is_written(brain, kw, match):
     write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
     with pytest.raises(SchemaError, match=match):
-        prepare_highlights(brain, **(dict(paper_id="RAG-Lewis2020", passages=[PASSAGE]) | kw))
+        prepare_highlights(
+            brain, **(dict(paper_id="RAG-Lewis2020", passages=[PASSAGE], verify_graph=False) | kw)
+        )
     assert not (brain / "assets" / f"{STEM}.edn").exists()
 
 
@@ -196,3 +191,19 @@ def test_a_passage_that_drops_the_citation_before_its_full_stop_is_found(brain):
 def test_small_caps_set_in_capitals_are_found(brain):
     write_pdf(pdf(brain), [[(72, 700, "RAGCHECKER has the highest correlation.")]])
     assert highlight(brain, ["RAGChecker has the highest correlation."])["rejected"] == []
+
+
+# --- the open graph (ADR 0006): the hls__ page must land in the brain the edn was written to ----------
+
+LOGSEQ = "http://localhost:12315"
+
+
+@respx.mock
+def test_another_open_graph_is_refused_before_the_edn_is_written(brain, monkeypatch, tmp_path_factory):
+    monkeypatch.setenv("LOGSEQ_API_URL", LOGSEQ)
+    monkeypatch.setenv("LOGSEQ_API_TOKEN", "t0ken")
+    respx.post(f"{LOGSEQ}/api").respond(json={"name": "g", "path": str(tmp_path_factory.mktemp("other"))})
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    with pytest.raises(SchemaError, match="wrong graph"):
+        highlight(brain, [PASSAGE], verify_graph=True)
+    assert not (brain / "assets" / f"{STEM}.edn").exists()
