@@ -3,6 +3,7 @@
 from fastmcp import FastMCP
 
 from . import config, core
+from .highlights import prepare_highlights as _prepare_highlights
 from .ingest import prepare_ingest as _prepare_ingest
 from .lint import lint as _lint
 
@@ -84,6 +85,28 @@ def prepare_ingest(
         code_url=code_url,
         abstract=abstract,
     )
+
+
+@mcp.tool
+def prepare_highlights(paper_id: str, passages: list[str], color: str = "blue") -> dict:
+    """Turn passages you chose from a paper's PDF into Logseq PDF highlights.
+
+    Pick 5-15 key passages and copy each verbatim from one page of the PDF; you choose, the server only
+    checks and places them. Matching ignores line breaks, hyphenation, quote style, case and a dropped
+    citation before the final full stop; anything else must be word for word. paper_id names the paper
+    page, e.g. 'RAG-Lewis2020' for Sources/Research/RAG-Lewis2020, whose pdf-path gives the PDF.
+
+    Writes assets/<pdf-stem>.edn (the highlight positions Logseq's PDF viewer draws) and returns
+    `calls` for mcp-logseq: the hls__<pdf-stem> page (one block per highlight, its id matching the
+    edn; update_page in replace mode when a paper page already embeds it, else create_page) and the Log
+    entry. `rejected` lists passages not found, with the reason; a paper that has
+    highlights is refused, so a rejected passage cannot be added later by this tool. color is one of
+    yellow, red, green, blue, purple; blue marks machine-picked highlights.
+
+    Refuses a paper without a PDF or with highlights already (edn or hls__ page), and, like
+    prepare_ingest, when Logseq has a different graph open than SECOND_BRAIN_PATH.
+    """
+    return _prepare_highlights(config.second_brain_path(), paper_id=paper_id, passages=passages, color=color)
 
 
 @mcp.tool

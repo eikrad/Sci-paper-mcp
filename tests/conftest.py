@@ -3,6 +3,7 @@
 from datetime import date
 
 import pytest
+from reportlab.pdfgen import canvas
 
 from sci_paper_mcp import core
 from sci_paper_mcp.core import Lookup
@@ -98,20 +99,41 @@ def page_file(root, title):
     return root / "pages" / f"{title.replace('/', '%2F')}.md"
 
 
-def apply_calls(root, calls):
-    """Apply prepare_ingest's `calls` to a tmp brain the way mcp-logseq would.
+def _known_to_logseq(root, title):
+    """Logseq has a page if it has a file or if any page links to it."""
+    link = f"[[{title}]]".lower()
+    return page_file(root, title).exists() or any(
+        link in p.read_text().lower() for p in (root / "pages").glob("*.md")
+    )
 
-    A stand-in for mcp-logseq, not verified against a live Logseq (ADR 0006). `create_page` writes
-    `key:: value` property lines, a blank line and the content to the encoded file; `update_page`
-    with mode "append" appends to it, creating the file if needed (e.g. `Log`).
+
+def apply_calls(root, calls):
+    """Apply the tools' `calls` to a tmp brain the way mcp-logseq would.
+
+    A stand-in for mcp-logseq. `create_page` writes `key:: value` property lines, a blank line and the
+    content to the encoded file; `update_page` with mode "append" appends to it, creating the file if
+    needed (e.g. `Log`); with mode "replace" it rewrites the page, properties first.
+
+    Checked live against mcp-logseq 1.10.0 and Logseq 0.10.15 (2026-11-13): a page that another page
+    links to exists in Logseq without a file, so `create_page` refuses it, while `update_page` refuses a
+    page Logseq does not have at all. The stand-in refuses both the same way.
     """
     for call in calls:
         args = call["arguments"]
         match call["tool"], args.get("mode"):
             case "create_page", None:
                 path = page_file(root, args["title"])
-                assert not path.exists(), f"create_page on an existing page: {args['title']}"
+                assert not _known_to_logseq(root, args["title"]), (
+                    f"create_page on a page Logseq has: {args['title']}"
+                )
                 props = "".join(f"{k}:: {v}\n" for k, v in args["properties"].items())
+                path.write_text(f"{props}\n{args['content']}\n")
+            case "update_page", "replace":
+                path = page_file(root, args["page_name"])
+                assert _known_to_logseq(root, args["page_name"]), (
+                    f"update_page on a missing page: {args['page_name']}"
+                )
+                props = "".join(f"{k}:: {v}\n" for k, v in args.get("properties", {}).items())
                 path.write_text(f"{props}\n{args['content']}\n")
             case "update_page", "append":
                 path = page_file(root, args["page_name"])
@@ -123,6 +145,17 @@ def apply_calls(root, calls):
                 raise AssertionError(
                     f"mcp-logseq stand-in does not support {call['tool']} {args.get('mode')}"
                 )
+
+
+def write_pdf(path, pages, size=(612, 792)):
+    """A text PDF: `pages` is a list of pages, each a list of (x, baseline_y, text) lines in PDF points."""
+    c = canvas.Canvas(str(path), pagesize=size)
+    for lines in pages:
+        c.setFont("Helvetica", 12)
+        for x, y, text in lines:
+            c.drawString(x, y, text)
+        c.showPage()
+    c.save()
 
 
 @pytest.fixture(autouse=True)
