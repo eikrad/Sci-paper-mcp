@@ -2,10 +2,11 @@ from datetime import date
 
 import edn_format
 import pytest
-from conftest import paper_page
+from conftest import page_file, paper_page
 from pytest import approx
 from reportlab.pdfgen import canvas
 
+from sci_paper_mcp.brain import SchemaError
 from sci_paper_mcp.highlights import prepare_highlights
 
 STEM = "RAG-Lewis2020-2005.11401"
@@ -91,3 +92,107 @@ def test_a_passage_becomes_a_highlight_whose_block_logseq_can_find(brain):
     assert log["arguments"]["content"].startswith(
         "## [2026-01-02] highlights | Sources/Research/RAG-Lewis2020"
     )
+
+
+# --- the passage only has to be verbatim, not typeset the same way ----------------------------------
+
+
+def test_a_word_hyphenated_across_lines_is_found(brain):
+    write_pdf(pdf(brain), [[(72, 700, "Dense retrieval keeps infor-"), (72, 686, "mation current.")]])
+    r = highlight(brain, ["Dense retrieval keeps information current."])
+    assert r["rejected"] == []
+    [stored] = read_edn(brain / "assets" / f"{STEM}.edn")
+    assert len(stored["rects"]) == 2  # one per line, as Logseq draws them
+
+
+def test_a_compound_broken_at_its_hyphen_is_found(brain):
+    write_pdf(pdf(brain), [[(72, 700, "We evaluate zero-"), (72, 686, "shot retrieval on BEIR.")]])
+    assert highlight(brain, ["We evaluate zero-shot retrieval on BEIR."])["rejected"] == []
+
+
+def test_quote_style_and_ligatures_do_not_matter(brain):
+    write_pdf(pdf(brain), [[(72, 700, "Kendall’s tau confirms the final ranking.")]])
+    r = highlight(brain, ["Kendall's tau conﬁrms the ﬁnal ranking."])
+    assert r["rejected"] == []
+
+
+def test_a_passage_that_is_not_in_the_pdf_is_rejected_and_the_rest_kept(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    r = highlight(brain, [PASSAGE, "Retrieval makes language models stay factual."])
+    assert [h["text"] for h in r["highlights"]] == [PASSAGE]
+    [rejected] = r["rejected"]
+    assert rejected["passage"] == "Retrieval makes language models stay factual."
+    assert "not found" in rejected["reason"]
+    assert len(read_edn(brain / "assets" / f"{STEM}.edn")) == 1
+
+
+def test_a_passage_running_over_a_page_break_is_rejected(brain):
+    write_pdf(pdf(brain), [[(72, 60, "The last line of a page")], [(72, 740, "continues on the next.")]])
+    r = highlight(brain, ["The last line of a page continues on the next."])
+    assert r["highlights"] == [] and "one page" in r["rejected"][0]["reason"]
+
+
+def test_when_nothing_is_found_nothing_is_written(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    r = highlight(brain, ["A sentence the paper never says."])
+    assert r["calls"] == [] and r["highlights"] == []
+    assert not (brain / "assets" / f"{STEM}.edn").exists()
+
+
+def test_a_passage_that_occurs_twice_is_highlighted_once_with_a_warning(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)], [(72, 700, PASSAGE)]])
+    r = highlight(brain, [PASSAGE])
+    assert [h["page"] for h in r["highlights"]] == [1]
+    assert any("2 times" in w for w in r["warnings"])
+
+
+# --- refusals: only papers without highlights, only real PDFs ----------------------------------------
+
+
+def test_a_paper_that_already_has_highlights_is_left_alone(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    (brain / "assets" / f"{STEM}.edn").write_text("{:highlights []}")
+    with pytest.raises(SchemaError, match="already has highlights"):
+        highlight(brain, [PASSAGE])
+    assert (brain / "assets" / f"{STEM}.edn").read_text() == "{:highlights []}"
+
+
+def test_a_paper_with_a_highlights_page_but_no_edn_is_left_alone(brain):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    page_file(brain, f"hls__{STEM}").write_text("- a hand-made note\n")
+    with pytest.raises(SchemaError, match="already has highlights"):
+        highlight(brain, [PASSAGE])
+
+
+def test_a_paper_without_a_pdf_is_refused(make_brain):
+    root = make_brain(pages={"Sources/Research/RAG-Lewis2020": paper_page({"pdf-path": "not-found"})})
+    with pytest.raises(SchemaError, match="no PDF"):
+        prepare_highlights(root, paper_id="RAG-Lewis2020", passages=[PASSAGE])
+
+
+@pytest.mark.parametrize(
+    "kw, match",
+    [
+        (dict(paper_id="Nobody2020"), "no page"),
+        (dict(passages=[]), "at least one passage"),
+        (dict(color="orange"), "colour"),
+    ],
+)
+def test_bad_input_is_refused_before_anything_is_written(brain, kw, match):
+    write_pdf(pdf(brain), [[(72, 700, PASSAGE)]])
+    with pytest.raises(SchemaError, match=match):
+        prepare_highlights(brain, **(dict(paper_id="RAG-Lewis2020", passages=[PASSAGE]) | kw))
+    assert not (brain / "assets" / f"{STEM}.edn").exists()
+
+
+def test_a_passage_that_drops_the_citation_before_its_full_stop_is_found(brain):
+    write_pdf(pdf(brain), [[(72, 700, "Hybrid models combine both kinds of memory [38]. Next.")]])
+    r = highlight(brain, ["Hybrid models combine both kinds of memory."])
+    assert r["rejected"] == []
+    [stored] = read_edn(brain / "assets" / f"{STEM}.edn")
+    assert stored["bounding"][2] < 72 + 300  # ends at "memory", before the citation
+
+
+def test_small_caps_set_in_capitals_are_found(brain):
+    write_pdf(pdf(brain), [[(72, 700, "RAGCHECKER has the highest correlation.")]])
+    assert highlight(brain, ["RAGChecker has the highest correlation."])["rejected"] == []

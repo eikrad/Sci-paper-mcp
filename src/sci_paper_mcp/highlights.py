@@ -6,6 +6,7 @@ highlights from, and returns the `hls__` page for the agent to create through mc
 """
 
 import json
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -30,12 +31,43 @@ class _Page:
     boxes: list[Box | None]  # by character index; None for blanks
 
 
+COLORS = ("yellow", "red", "green", "blue", "purple")  # the colours of Logseq's highlight menu
+
+_QUOTES = str.maketrans("\u2018\u2019\u201a\u201b\u2032\u201c\u201d\u201e\u201f\u2033", "'''''\"\"\"\"\"")
+# Hyphens and dashes are ignored along with blanks: a line break can hide a compound's hyphen or add one
+# inside a word, and PDFium reports a hyphen at a line break as U+0002.
+_IGNORED = frozenset("-\u00ad\u2010\u2011\u2012\u2013\u2014\u2015\u2212\x02")
+
+
 def _normalise(ch: str) -> str:
-    return "" if ch.isspace() else ch
+    """What a character counts as when matching.
+
+    Ligatures and maths letters become plain letters (NFKC), quotes are straightened and case is ignored
+    (small caps are often set as capitals); blanks, hyphens and dashes are dropped.
+    """
+    return "".join(
+        c
+        for c in unicodedata.normalize("NFKC", ch).translate(_QUOTES).casefold()
+        if not c.isspace() and c not in _IGNORED
+    )
 
 
 def _key(text: str) -> str:
     return "".join(_normalise(ch) for ch in text)
+
+
+def _char(codes: list[int], i: int) -> str:
+    """The character at PDFium char index i.
+
+    PDFium hands out UTF-16 code units, so a character outside the BMP (maths letters such as the
+    italic tau) arrives as two indices: the pair is read at the first, the second counts as nothing.
+    """
+    code = codes[i]
+    if 0xD800 <= code < 0xDC00 and i + 1 < len(codes) and 0xDC00 <= codes[i + 1] < 0xE000:
+        return chr(0x10000 + ((code - 0xD800) << 10) + (codes[i + 1] - 0xDC00))
+    if not code or 0xD800 <= code < 0xE000:
+        return ""
+    return chr(code)
 
 
 def _read(pdf_file: Path) -> list[_Page]:
@@ -47,9 +79,9 @@ def _read(pdf_file: Path) -> list[_Page]:
             left, bottom, right, top = page.get_cropbox()
             text = page.get_textpage()
             key, source, boxes = [], [], []
-            for i in range(text.count_chars()):
-                code = pdfium_c.FPDFText_GetUnicode(text, i)
-                normal = _normalise(chr(code)) if code else ""
+            codes = [pdfium_c.FPDFText_GetUnicode(text, i) for i in range(text.count_chars())]
+            for i in range(len(codes)):
+                normal = _normalise(_char(codes, i))
                 key.append(normal)
                 source += [i] * len(normal)
                 if normal:
@@ -81,13 +113,35 @@ def _lines(boxes: list[Box]) -> list[Box]:
     return lines
 
 
-def _find(pages: list[_Page], passage: str) -> tuple[_Page, list[Box]] | None:
-    key = _key(passage)
+def _occurrences(pages: list[_Page], key: str) -> list[tuple[_Page, int]]:
+    hits = []
     for page in pages:
-        if key and (start := page.key.find(key)) >= 0:
-            first, last = page.source[start], page.source[start + len(key) - 1]
-            return page, _lines([b for b in page.boxes[first : last + 1] if b])
-    return None
+        start = page.key.find(key)
+        while start >= 0:
+            hits.append((page, start))
+            start = page.key.find(key, start + 1)
+    return hits
+
+
+def _locate(pages: list[_Page], text: str) -> tuple[str, list[tuple[_Page, int]]]:
+    """The matching key of a passage and where it occurs.
+
+    A passage whose final punctuation is the only difference also counts: agents drop inline citations,
+    so "... memory [38]." gets quoted as "... memory.", and the highlight then ends at "memory".
+    """
+    key = _key(text)
+    hits = _occurrences(pages, key) if key else []
+    if not hits and (bare := key.rstrip(".,;:")) != key and bare:
+        key, hits = bare, _occurrences(pages, bare)
+    return key, hits
+
+
+def _rects(page: _Page, start: int, length: int) -> list[Box]:
+    first, last = page.source[start], page.source[start + length - 1]
+    return _lines([b for b in page.boxes[first : last + 1] if b])
+
+
+_NOT_FOUND = "not found on any one page of the PDF; a passage must be verbatim and lie on one page"
 
 
 # --- Logseq's formats --------------------------------------------------------------------------------
@@ -137,7 +191,15 @@ def prepare_highlights(
     color: str = "blue",
     today: date | None = None,
 ) -> dict:
-    """Locate each passage in the paper's PDF, write the highlight file, return the hls__ page calls."""
+    """Locate each passage in the paper's PDF, write the highlight file, return the hls__ page calls.
+
+    Only papers without highlights are touched: an existing edn or hls__ page is refused, since Logseq
+    may hold the edn in memory and overwrite it. Nothing is written when no passage is found.
+    """
+    if not passages:
+        raise SchemaError("give at least one passage")
+    if color not in COLORS:
+        raise SchemaError(f"colour '{color}' is not one of Logseq's highlight colours {COLORS}")
     brain = Brain(root)
     title = paper_title(paper_id)
     page_text = brain.page(title)
@@ -146,31 +208,40 @@ def prepare_highlights(
     pdf = parse_properties(page_text).get("pdf-path")
     if not names_pdf(pdf) or not brain.has_pdf(pdf):
         raise SchemaError(f"'{title}' has no PDF in the raw layer (pdf-path: {pdf})")
+    hls, edn_file = highlights_title(pdf), brain.highlights_file(pdf)
+    if edn_file.exists() or brain.has_page(hls):
+        raise SchemaError(f"'{title}' already has highlights ({hls}); they are left alone")
 
     pages = _read(brain.pdf_file(pdf))
-    found, rejected, stored, blocks = [], [], [], []
+    found, rejected, stored, blocks, warnings = [], [], [], [], []
     for passage in passages:
         text = " ".join(passage.split())
-        hit = _find(pages, text)
-        if hit is None:
-            rejected.append({"passage": passage, "reason": "not found in the PDF"})
+        key, hits = _locate(pages, text)
+        if not hits:
+            rejected.append({"passage": passage, "reason": _NOT_FOUND})
             continue
-        page, rects = hit
+        page, start = hits[0]
+        if len(hits) > 1:
+            warnings.append(
+                f"found {len(hits)} times, highlighted the first (page {page.number}): {text[:60]}"
+            )
         id_ = uuid.uuid4()
         found.append({"id": str(id_), "page": page.number, "text": text})
         stored.append(
             {
                 "id": id_,
                 "page": page.number,
-                "position": _position(page, rects),
+                "position": _position(page, _rects(page, start, len(key))),
                 "content": {"text": text},
                 "properties": {"color": color},
             }
         )
         blocks.append(_block(text, page.number, color, id_))
 
-    hls = highlights_title(pdf)
-    brain.highlights_file(pdf).write_text(_edn({"highlights": stored, "extra": {"page": 1}}) + "\n")
+    result = {"page": hls, "highlights": found, "rejected": rejected, "warnings": warnings}
+    if not found:
+        return result | {"calls": [], "next": "No passage was found, so nothing was written."}
+    edn_file.write_text(_edn({"highlights": stored, "extra": {"page": 1}}) + "\n")
     today = today or date.today()
     calls = [
         {
@@ -194,4 +265,10 @@ def prepare_highlights(
             },
         },
     ]
-    return {"page": hls, "highlights": found, "rejected": rejected, "calls": calls, "warnings": []}
+    return result | {
+        "calls": calls,
+        "next": (
+            f"{edn_file.name} is written. Apply `calls` in order with mcp-logseq; until then Logseq shows "
+            "the highlights on the PDF without their blocks."
+        ),
+    }
